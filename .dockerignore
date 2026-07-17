@@ -1,0 +1,10 @@
+.git
+.gitignore
+**/node_modules
+web/dist
+webembed/dist
+*.db
+*.db-shm
+*.db-wal
+docs
+README.md

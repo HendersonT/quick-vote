@@ -1,0 +1,12 @@
+services:
+  quickvote:
+    build: .
+    image: quickvote
+    ports:
+      - "8080:8080"
+    volumes:
+      - quickvote-data:/data
+    restart: unless-stopped
+
+volumes:
+  quickvote-data:
