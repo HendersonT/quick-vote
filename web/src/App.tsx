@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import Home from "./pages/Home";
+import Room from "./pages/Room";
 
 /**
  * Minimal client-side router (no dependency needed for two routes):
  *   "/"          -> Home
- *   "/v/:slug"   -> Room (wired in a later task; placeholder for now)
+ *   "/v/:slug"   -> Room
  * Anything else -> a friendly not-found screen.
  */
 
@@ -38,11 +39,6 @@ function usePathname(): string {
   return pathname;
 }
 
-function RoomPlaceholder({ slug }: { slug: string }) {
-  // Task 11 replaces this with the real Room page (join gate, phases, etc.).
-  return <div className="room-placeholder">Loading vote {slug}…</div>;
-}
-
 function NotFound() {
   return (
     <div className="not-found">
@@ -62,7 +58,7 @@ export default function App() {
     case "home":
       return <Home />;
     case "room":
-      return <RoomPlaceholder slug={route.slug} />;
+      return <Room slug={route.slug} />;
     default:
       return <NotFound />;
   }
