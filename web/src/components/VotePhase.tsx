@@ -63,7 +63,7 @@ export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps)
   return (
     <section className="vote-phase">
       <h2>Vote</h2>
-      <div className="budget-meter" role="status">
+      <div className={`budget-meter ${left < 0 ? "over-budget" : ""}`} role="status">
         <div className="budget-meter-bar">
           <div
             className="budget-meter-fill"

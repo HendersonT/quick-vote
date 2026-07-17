@@ -112,7 +112,9 @@ export default function ResultsPhase({
         {results.scores.map((s) => (
           <li
             key={s.optionId}
-            className={`score-item ${s.eliminated ? "score-item-eliminated" : ""}`}
+            className={`score-item ${s.eliminated ? "score-item-eliminated" : ""} ${
+              !s.eliminated && s.optionId === results.winnerOptionId ? "score-item-winner" : ""
+            }`}
           >
             <div className="score-item-header">
               <span className="option-title">{optionTitle(s.optionId)}</span>
