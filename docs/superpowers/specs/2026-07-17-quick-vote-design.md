@@ -90,9 +90,9 @@ Edge rules:
 - Advancing to voting with fewer than 2 options is blocked (creator gets an
   explanatory error; timers with <2 options hold the phase and notify).
 - Participants may join at any phase; late joiners in `voting` can vote,
-  late joiners in `results` only spectate and count toward re-vote
-  denominators only if they joined before results were computed. (Simplify:
-  re-vote denominator = participants at the moment of counting.)
+  late joiners in `results` spectate but may call for a re-vote. The re-vote
+  denominator is simply the participant count at the moment calls are
+  counted.
 
 ### Scoring (at entry to results)
 
