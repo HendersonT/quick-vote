@@ -16,17 +16,34 @@ import (
 // Server wires the chi router to a Store and (optionally) a static asset
 // filesystem for the built SPA. It implements http.Handler.
 type Server struct {
-	store  *store.Store
-	static fs.FS
-	router chi.Router
+	store     *store.Store
+	static    fs.FS
+	router    chi.Router
+	scheduler *Scheduler
+	onChange  func(slug string)
 }
 
 // New builds a Server. staticFS may be nil (e.g. in tests) in which case no
 // static/SPA routes are registered — only /api.
 func New(st *store.Store, staticFS fs.FS) *Server {
 	s := &Server{store: st, static: staticFS}
+	s.scheduler = NewScheduler(func(slug string) { s.timerFired(slug) })
 	s.router = s.routes()
 	return s
+}
+
+// SetOnChange registers a hook invoked with a vote's slug whenever that vote's
+// room state changes. The WebSocket hub (Task 8) uses it to broadcast fresh
+// snapshots.
+func (s *Server) SetOnChange(fn func(slug string)) {
+	s.onChange = fn
+}
+
+// changed notifies the onChange hook (if any) that slug's state changed.
+func (s *Server) changed(slug string) {
+	if s.onChange != nil {
+		s.onChange(slug)
+	}
 }
 
 // ServeHTTP implements http.Handler.
@@ -43,6 +60,11 @@ func (s *Server) routes() chi.Router {
 		r.Route("/{slug}", func(r chi.Router) {
 			r.Get("/", s.handleGetVote)
 			r.Post("/join", s.handleJoin)
+			r.Post("/suggestions", s.handleCreateSuggestion)
+			r.Delete("/suggestions/{id}", s.handleDeleteSuggestion)
+			r.Put("/ballot", s.handlePutBallot)
+			r.Post("/advance", s.handleAdvance)
+			r.Post("/revote", s.handleRevote)
 		})
 	})
 

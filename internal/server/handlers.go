@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -156,7 +157,6 @@ func (s *Server) handleCreateVote(w http.ResponseWriter, r *http.Request) {
 	if settings.SuggestTimerSecs > 0 {
 		d := now.Add(time.Duration(settings.SuggestTimerSecs) * time.Second).Unix()
 		deadline = &d
-		// TODO(Task 7): register this deadline with the timer scheduler.
 	}
 
 	v := store.VoteRow{
@@ -186,6 +186,8 @@ func (s *Server) handleCreateVote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to add creator")
 		return
 	}
+
+	s.armOrClear(slug, deadline)
 
 	state := BuildRoomState(v, []store.ParticipantRow{p}, nil, map[string]map[string]int{}, &p)
 
@@ -331,4 +333,394 @@ func (s *Server) handleGetVote(w http.ResponseWriter, r *http.Request) {
 	state := BuildRoomState(v, parts, opts, ballots, requester)
 
 	writeJSON(w, http.StatusOK, state)
+}
+
+// getVoteOr404 loads a vote, writing a 404/500 error response and returning
+// ok=false when the lookup fails.
+func (s *Server) getVoteOr404(w http.ResponseWriter, slug string) (store.VoteRow, bool) {
+	v, err := s.store.GetVote(slug)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "vote not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
+		return store.VoteRow{}, false
+	}
+	return v, true
+}
+
+// requireParticipant resolves the caller's session token to a participant of
+// slug, writing a 401 error and returning ok=false when it is missing/invalid.
+func (s *Server) requireParticipant(w http.ResponseWriter, r *http.Request, slug string) (store.ParticipantRow, bool) {
+	token := bearerToken(r)
+	if token == "" {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return store.ParticipantRow{}, false
+	}
+	p, err := s.store.ParticipantByToken(slug, token)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid session token")
+		return store.ParticipantRow{}, false
+	}
+	return p, true
+}
+
+// parseSettings decodes the settings JSON stored on a vote row.
+func parseSettings(v store.VoteRow) (domain.Settings, error) {
+	var s domain.Settings
+	err := json.Unmarshal([]byte(v.Settings), &s)
+	return s, err
+}
+
+// writeState reloads the full room state for slug and writes it as a 200
+// response, personalized for requester (nil = spectator).
+func (s *Server) writeState(w http.ResponseWriter, slug string, requester *store.ParticipantRow) {
+	v, err := s.store.GetVote(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	parts, err := s.store.Participants(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	opts, err := s.store.Options(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	ballots, err := s.store.Ballots(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, BuildRoomState(v, parts, opts, ballots, requester))
+}
+
+type suggestionRequest struct {
+	Title string `json:"title"`
+}
+
+// handleCreateSuggestion implements POST /api/votes/{slug}/suggestions.
+func (s *Server) handleCreateSuggestion(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	v, ok := s.getVoteOr404(w, slug)
+	if !ok {
+		return
+	}
+	p, ok := s.requireParticipant(w, r, slug)
+	if !ok {
+		return
+	}
+	if v.Phase != string(domain.PhaseSuggesting) {
+		writeError(w, http.StatusConflict, "suggestions are closed")
+		return
+	}
+
+	var req suggestionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	if len(title) > 200 {
+		writeError(w, http.StatusBadRequest, "title must be at most 200 characters")
+		return
+	}
+
+	settings, err := parseSettings(v)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	opts, err := s.store.Options(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	mine := 0
+	for _, o := range opts {
+		if o.ParticipantID == p.ID {
+			mine++
+		}
+		if strings.EqualFold(strings.TrimSpace(o.Title), title) {
+			writeError(w, http.StatusConflict, "that suggestion already exists")
+			return
+		}
+	}
+	if mine >= settings.MaxSuggestionsPerUser {
+		writeError(w, http.StatusConflict, "suggestion limit reached")
+		return
+	}
+
+	o := store.OptionRow{
+		ID:            ids.NewToken(),
+		VoteSlug:      slug,
+		ParticipantID: p.ID,
+		Title:         title,
+		CreatedAt:     time.Now().Unix(),
+	}
+	if err := s.store.AddOption(o); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to add suggestion")
+		return
+	}
+
+	s.maybeAutoAdvanceSuggest(slug, settings)
+	s.changed(slug)
+	s.writeState(w, slug, &p)
+}
+
+// handleDeleteSuggestion implements DELETE
+// /api/votes/{slug}/suggestions/{id}. A participant may only delete their own
+// suggestions, and only during the suggesting phase.
+func (s *Server) handleDeleteSuggestion(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	v, ok := s.getVoteOr404(w, slug)
+	if !ok {
+		return
+	}
+	p, ok := s.requireParticipant(w, r, slug)
+	if !ok {
+		return
+	}
+	if v.Phase != string(domain.PhaseSuggesting) {
+		writeError(w, http.StatusConflict, "suggestions are closed")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if err := s.store.DeleteOption(slug, id, p.ID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "suggestion not found or not yours")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	s.changed(slug)
+	s.writeState(w, slug, &p)
+}
+
+type ballotRequest struct {
+	Votes map[string]int `json:"votes"`
+}
+
+// handlePutBallot implements PUT /api/votes/{slug}/ballot.
+func (s *Server) handlePutBallot(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	v, ok := s.getVoteOr404(w, slug)
+	if !ok {
+		return
+	}
+	p, ok := s.requireParticipant(w, r, slug)
+	if !ok {
+		return
+	}
+	if v.Phase != string(domain.PhaseVoting) {
+		writeError(w, http.StatusConflict, "voting is not open")
+		return
+	}
+
+	var req ballotRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Votes == nil {
+		req.Votes = map[string]int{}
+	}
+
+	settings, err := parseSettings(v)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	opts, err := s.store.Options(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	optionIDs := make([]string, 0, len(opts))
+	for _, o := range opts {
+		optionIDs = append(optionIDs, o.ID)
+	}
+	budget := settings.CreditsPerOption * len(opts)
+	if err := domain.ValidateBallot(req.Votes, optionIDs, budget); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	buf, err := json.Marshal(req.Votes)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if err := s.store.PutBallot(slug, p.ID, string(buf)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save ballot")
+		return
+	}
+
+	s.maybeAutoAdvanceVote(slug, settings)
+	s.changed(slug)
+	s.writeState(w, slug, &p)
+}
+
+type advanceRequest struct {
+	WinnerOptionID string `json:"winnerOptionId"`
+}
+
+// handleAdvance implements POST /api/votes/{slug}/advance. It requires both a
+// valid session token and a matching X-Creator-Token header.
+func (s *Server) handleAdvance(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	v, ok := s.getVoteOr404(w, slug)
+	if !ok {
+		return
+	}
+	p, ok := s.requireParticipant(w, r, slug)
+	if !ok {
+		return
+	}
+	if r.Header.Get("X-Creator-Token") != v.CreatorToken {
+		writeError(w, http.StatusForbidden, "creator token required")
+		return
+	}
+
+	var req advanceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := s.advancePhase(slug, true, strings.TrimSpace(req.WinnerOptionID)); err != nil {
+		switch {
+		case errors.Is(err, errNeedTwoSuggestions):
+			writeError(w, http.StatusConflict, "need at least 2 suggestions")
+		case errors.Is(err, errAlreadyResults):
+			writeError(w, http.StatusConflict, "already at results")
+		case errors.Is(err, errNoTiePending):
+			writeError(w, http.StatusConflict, "no tiebreak is pending")
+		case errors.Is(err, errBadTiebreakWinner):
+			writeError(w, http.StatusBadRequest, "winnerOptionId must be one of the tied options")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+
+	s.changed(slug)
+	s.writeState(w, slug, &p)
+}
+
+// handleRevote implements POST /api/votes/{slug}/revote. It toggles the
+// caller's re-vote call; if the threshold is met the vote returns to voting
+// with cleared ballots.
+func (s *Server) handleRevote(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	v, ok := s.getVoteOr404(w, slug)
+	if !ok {
+		return
+	}
+	p, ok := s.requireParticipant(w, r, slug)
+	if !ok {
+		return
+	}
+	if v.Phase != string(domain.PhaseResults) {
+		writeError(w, http.StatusConflict, "re-vote can only be called in the results phase")
+		return
+	}
+
+	if err := s.store.SetWantsRevote(p.ID, !p.WantsRevote); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	settings, err := parseSettings(v)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	parts, err := s.store.Participants(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	calls := 0
+	for _, pp := range parts {
+		if pp.WantsRevote {
+			calls++
+		}
+	}
+	if domain.RevoteMet(calls, len(parts), settings.RevoteThresholdPct) {
+		if err := s.store.DeleteBallots(slug); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if err := s.store.ResetRevotes(slug); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		v.Phase = string(domain.PhaseVoting)
+		v.Results = nil
+		v.PhaseDeadline = nil
+		if settings.VoteTimerSecs > 0 {
+			d := time.Now().Add(time.Duration(settings.VoteTimerSecs) * time.Second).Unix()
+			v.PhaseDeadline = &d
+		}
+		if err := s.store.UpdateVote(v); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		s.armOrClear(slug, v.PhaseDeadline)
+	}
+
+	s.changed(slug)
+	s.writeState(w, slug, &p)
+}
+
+// maybeAutoAdvanceSuggest advances suggesting -> voting when the count-based
+// advance rule is configured and satisfied.
+func (s *Server) maybeAutoAdvanceSuggest(slug string, settings domain.Settings) {
+	if settings.SuggestAdvanceMode != "count" || settings.SuggestAdvanceCount < 1 {
+		return
+	}
+	opts, err := s.store.Options(slug)
+	if err != nil || len(opts) < 2 {
+		return
+	}
+	distinct := make(map[string]bool, len(opts))
+	for _, o := range opts {
+		distinct[o.ParticipantID] = true
+	}
+	if len(distinct) >= settings.SuggestAdvanceCount {
+		_ = s.advancePhase(slug, false, "")
+	}
+}
+
+// maybeAutoAdvanceVote advances voting -> results when the all-voted rule is
+// configured and every current participant has submitted a ballot.
+func (s *Server) maybeAutoAdvanceVote(slug string, settings domain.Settings) {
+	if settings.VoteAdvanceMode != "all-voted" {
+		return
+	}
+	parts, err := s.store.Participants(slug)
+	if err != nil || len(parts) == 0 {
+		return
+	}
+	ballots, err := s.store.Ballots(slug)
+	if err != nil {
+		return
+	}
+	for _, p := range parts {
+		if _, ok := ballots[p.ID]; !ok {
+			return
+		}
+	}
+	_ = s.advancePhase(slug, false, "")
 }
