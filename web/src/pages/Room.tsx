@@ -3,8 +3,10 @@ import { advanceVote, getVote } from "../api";
 import Countdown from "../components/Countdown";
 import JoinGate from "../components/JoinGate";
 import ParticipantList from "../components/ParticipantList";
+import ResultsPhase from "../components/ResultsPhase";
 import ShareLink from "../components/ShareLink";
 import SuggestPhase from "../components/SuggestPhase";
+import VotePhase from "../components/VotePhase";
 import { getSession, saveSession, type Session } from "../session";
 import type { Phase, RoomState } from "../types";
 import { connectRoom } from "../ws";
@@ -123,10 +125,15 @@ export default function Room({ slug }: RoomProps) {
             <SuggestPhase slug={slug} sessionToken={session.sessionToken} state={state} />
           )}
           {state.phase === "voting" && (
-            <p className="phase-placeholder">Voting phase — coming soon.</p>
+            <VotePhase slug={slug} sessionToken={session.sessionToken} state={state} />
           )}
           {state.phase === "results" && (
-            <p className="phase-placeholder">Results phase — coming soon.</p>
+            <ResultsPhase
+              slug={slug}
+              sessionToken={session.sessionToken}
+              creatorToken={session.creatorToken}
+              state={state}
+            />
           )}
         </main>
       </div>
