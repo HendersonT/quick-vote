@@ -302,3 +302,18 @@ func TestGetVoteUnknownSlug(t *testing.T) {
 		t.Fatalf("error = %v, want %q", out["error"], "vote not found")
 	}
 }
+
+func TestCreateVoteRejectsOversizedBody(t *testing.T) {
+	s := newTestServer(t)
+
+	huge := make([]byte, 128*1024)
+	for i := range huge {
+		huge[i] = 'a'
+	}
+	body := map[string]any{"title": string(huge), "creatorName": "Alice"}
+
+	rec, _ := doJSON(t, s, http.MethodPost, "/api/votes", body, "")
+	if rec.Code < 400 || rec.Code >= 500 {
+		t.Fatalf("expected a 4xx for oversized body, got %d", rec.Code)
+	}
+}

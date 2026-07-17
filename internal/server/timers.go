@@ -58,6 +58,7 @@ func (sc *Scheduler) Clear(slug string) {
 // suggestion timer expires while there are fewer than two options, the phase
 // is held and the deadline is dropped (the creator must resolve it manually).
 func (s *Server) timerFired(slug string) {
+	defer s.lockSlug(slug)()
 	err := s.advancePhase(slug, false, "")
 	if errors.Is(err, errNeedTwoSuggestions) {
 		s.clearDeadline(slug)
@@ -77,6 +78,25 @@ func (s *Server) clearDeadline(slug string) {
 	if s.scheduler != nil {
 		s.scheduler.Clear(slug)
 	}
+}
+
+// RearmTimers reloads every persisted phase deadline from the store and arms
+// the scheduler for it, so in-flight suggestion/vote timers survive a server
+// restart. Deadlines already in the past fire immediately (the Scheduler
+// clamps a negative duration to zero), matching the live-timer semantics.
+// Call once at startup, before serving.
+func (s *Server) RearmTimers() error {
+	if s.scheduler == nil {
+		return nil
+	}
+	deadlines, err := s.store.ActiveDeadlines()
+	if err != nil {
+		return err
+	}
+	for slug, at := range deadlines {
+		s.scheduler.Set(slug, time.Unix(at, 0))
+	}
+	return nil
 }
 
 // armOrClear arms the scheduler for slug when deadline is non-nil, or clears

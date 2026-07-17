@@ -406,6 +406,7 @@ type suggestionRequest struct {
 // handleCreateSuggestion implements POST /api/votes/{slug}/suggestions.
 func (s *Server) handleCreateSuggestion(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
+	defer s.lockSlug(slug)()
 	v, ok := s.getVoteOr404(w, slug)
 	if !ok {
 		return
@@ -514,6 +515,7 @@ type ballotRequest struct {
 // handlePutBallot implements PUT /api/votes/{slug}/ballot.
 func (s *Server) handlePutBallot(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
+	defer s.lockSlug(slug)()
 	v, ok := s.getVoteOr404(w, slug)
 	if !ok {
 		return
@@ -579,6 +581,7 @@ type advanceRequest struct {
 // valid session token and a matching X-Creator-Token header.
 func (s *Server) handleAdvance(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
+	defer s.lockSlug(slug)()
 	v, ok := s.getVoteOr404(w, slug)
 	if !ok {
 		return
@@ -623,6 +626,7 @@ func (s *Server) handleAdvance(w http.ResponseWriter, r *http.Request) {
 // with cleared ballots.
 func (s *Server) handleRevote(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
+	defer s.lockSlug(slug)()
 	v, ok := s.getVoteOr404(w, slug)
 	if !ok {
 		return

@@ -36,6 +36,12 @@ func main() {
 
 	srv := server.New(st, webembed.FS())
 
+	// Re-arm any phase timers that were in flight before this process started,
+	// so a restart doesn't silently strand votes waiting on a deadline.
+	if err := srv.RearmTimers(); err != nil {
+		log.Fatalf("quickvote: re-arm timers: %v", err)
+	}
+
 	log.Printf("quickvote: listening on %s, db at %s", *addr, *dbPath)
 	if err := http.ListenAndServe(*addr, srv); err != nil {
 		log.Fatalf("quickvote: server error: %v", err)

@@ -164,6 +164,36 @@ func (s *Store) UpdateVote(v VoteRow) error {
 	return nil
 }
 
+// ActiveDeadlines returns the phase deadline (unix seconds) for every vote
+// that currently has one set, keyed by slug. Used on server startup to re-arm
+// in-flight phase timers that would otherwise be lost across a restart.
+func (s *Store) ActiveDeadlines() (map[string]int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rows, err := s.db.Query(
+		`SELECT slug, phase_deadline FROM votes WHERE phase_deadline IS NOT NULL`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list active deadlines: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]int64)
+	for rows.Next() {
+		var slug string
+		var deadline int64
+		if err := rows.Scan(&slug, &deadline); err != nil {
+			return nil, fmt.Errorf("scan active deadline: %w", err)
+		}
+		out[slug] = deadline
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list active deadlines: %w", err)
+	}
+	return out, nil
+}
+
 // AddParticipant inserts a new participant row.
 func (s *Store) AddParticipant(p ParticipantRow) error {
 	s.mu.Lock()

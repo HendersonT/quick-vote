@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,6 +87,41 @@ func TestWebSocketInitialSnapshots(t *testing.T) {
 	if spectatorSnap["you"] != nil {
 		t.Fatalf("spectator snapshot: expected you to be nil, got %v", spectatorSnap["you"])
 	}
+}
+
+// TestWebSocketConcurrentBroadcastNoPanic hammers a room with many concurrent
+// broadcasts while a client stops reading (filling its send buffer so it gets
+// dropped). Before the teardown was single-sourced through c.done, this
+// triggered "close of closed channel" / "send on closed channel" panics in the
+// unrecovered pump/broadcast goroutines and crashed the whole process.
+func TestWebSocketConcurrentBroadcastNoPanic(t *testing.T) {
+	s, ts := newWSTestServer(t)
+
+	slug, _, sessionToken, _ := createVote(t, s, nil)
+
+	// A client that connects but never reads: its send buffer fills, so
+	// pushSnapshot takes the drop-and-close path.
+	stuck := dialWS(t, ts, slug, sessionToken)
+	defer stuck.Close()
+
+	// Fan out many concurrent broadcasts for the same slug, mirroring what
+	// happens when multiple HTTP mutations hit the same room at once.
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				s.Broadcast(slug)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// If any pump/broadcast goroutine had panicked on a closed channel, the
+	// test binary would have already crashed. Reaching here means teardown is
+	// panic-free; give lingering goroutines a moment to settle.
+	time.Sleep(50 * time.Millisecond)
 }
 
 func TestWebSocketBroadcastsOnChange(t *testing.T) {

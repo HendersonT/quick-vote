@@ -306,3 +306,32 @@ func TestBallots(t *testing.T) {
 		t.Fatalf("expected no ballots after delete, got %v", ballots)
 	}
 }
+
+func TestActiveDeadlines(t *testing.T) {
+	st := openTestStore(t)
+
+	withDeadline := int64(1234567890)
+	rows := []VoteRow{
+		{Slug: "with", Title: "t", Phase: "voting", Settings: "{}", CreatorToken: "c", CreatedAt: 1, PhaseDeadline: &withDeadline},
+		{Slug: "without", Title: "t", Phase: "suggesting", Settings: "{}", CreatorToken: "c", CreatedAt: 1},
+	}
+	for _, v := range rows {
+		if err := st.CreateVote(v); err != nil {
+			t.Fatalf("CreateVote %s: %v", v.Slug, err)
+		}
+	}
+
+	got, err := st.ActiveDeadlines()
+	if err != nil {
+		t.Fatalf("ActiveDeadlines: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 active deadline, got %d (%v)", len(got), got)
+	}
+	if got["with"] != withDeadline {
+		t.Fatalf("deadline for 'with' = %d, want %d", got["with"], withDeadline)
+	}
+	if _, ok := got["without"]; ok {
+		t.Fatalf("did not expect a deadline for 'without'")
+	}
+}

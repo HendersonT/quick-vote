@@ -18,11 +18,18 @@ export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps)
 
   const budget = state.budget;
 
-  // Prefill (or re-prefill on reconnect) from the saved ballot, but don't
-  // clobber in-progress local edits once the participant has voted.
+  // Prefill (or re-prefill on reconnect) from the saved ballot. Every WS
+  // snapshot arrives as a freshly-parsed object, so keying this effect on the
+  // ballot reference would re-run on every unrelated broadcast (e.g. another
+  // participant voting) and wipe out the user's in-progress steppers. Keying on
+  // the serialized content means we only re-seed when the *saved* ballot
+  // actually changes (initial load, reconnect, or a resubmit), never on an
+  // incidental broadcast that leaves this participant's ballot untouched.
+  const savedBallotKey = JSON.stringify(state.you?.ballot ?? {});
   useEffect(() => {
     setVotes(state.you?.ballot ?? {});
-  }, [state.you?.ballot]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedBallotKey]);
 
   const spent = ballotCost(votes);
   const left = remaining(votes, budget);

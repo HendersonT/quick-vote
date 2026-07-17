@@ -64,4 +64,31 @@ func TestValidateBallot(t *testing.T) {
 			t.Errorf("expected no error, got %v", err)
 		}
 	})
+
+	t.Run("per-option overflow rejected", func(t *testing.T) {
+		// A vote value near sqrt(maxint64) makes v*v overflow int64 and wrap
+		// negative, so a naive cost>budget check would pass. The per-option
+		// cap must reject it before the quadratic sum is computed.
+		votes := map[string]int{"a": 4000000000}
+		if err := ValidateBallot(votes, optionIDs, 9); err == nil {
+			t.Fatal("expected error for oversized per-option vote, got nil")
+		}
+	})
+
+	t.Run("single option cannot exceed budget", func(t *testing.T) {
+		// v==budget is the largest value whose square could ever fit the
+		// budget only when budget<=1; for budget 5, v=6 clearly overspends.
+		votes := map[string]int{"a": 6}
+		if err := ValidateBallot(votes, optionIDs, 5); err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("max legitimate single-option vote ok", func(t *testing.T) {
+		// budget 9 => a single option can legitimately hold 3 votes (cost 9).
+		votes := map[string]int{"a": 3}
+		if err := ValidateBallot(votes, optionIDs, 9); err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+	})
 }

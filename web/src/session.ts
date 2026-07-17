@@ -19,3 +19,7 @@ export function getSession(slug: string): Session | null {
 export function saveSession(slug: string, session: Session): void {
   localStorage.setItem(key(slug), JSON.stringify(session));
 }
+
+export function clearSession(slug: string): void {
+  localStorage.removeItem(key(slug));
+}

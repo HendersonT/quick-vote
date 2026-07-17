@@ -7,7 +7,7 @@ import ResultsPhase from "../components/ResultsPhase";
 import ShareLink from "../components/ShareLink";
 import SuggestPhase from "../components/SuggestPhase";
 import VotePhase from "../components/VotePhase";
-import { getSession, saveSession, type Session } from "../session";
+import { clearSession, getSession, saveSession, type Session } from "../session";
 import type { Phase, RoomState } from "../types";
 import { connectRoom } from "../ws";
 
@@ -50,7 +50,20 @@ export default function Room({ slug }: RoomProps) {
 
   useEffect(() => {
     if (!session) return;
-    return connectRoom(slug, session.sessionToken, setState);
+    return connectRoom(slug, session.sessionToken, (next) => {
+      // If a stored session token is no longer valid (server DB reset, pruned
+      // vote, etc.) the server still connects us but as a spectator (you ===
+      // null). Rather than silently trapping the user in a read-only room with
+      // no rejoin affordance, drop the dead session and fall back to the join
+      // gate so they can re-enter.
+      if (next.you === null) {
+        clearSession(slug);
+        setSession(null);
+        setState(null);
+        return;
+      }
+      setState(next);
+    });
   }, [slug, session]);
 
   function handleJoined(sessionToken: string, name: string, joinedState: RoomState) {

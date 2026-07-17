@@ -32,11 +32,25 @@ var wsUpgrader = websocket.Upgrader{
 // wsConn is a single upgraded WebSocket connection registered with the hub.
 // send is a small buffered channel; a slow or dead client is dropped rather
 // than allowed to block broadcasts to everyone else.
+//
+// Teardown is single-sourced through done: c.send is NEVER closed (so no
+// goroutine can ever send-on-closed or close-of-closed panic). Instead any
+// owner that decides the connection is finished calls c.close(), which closes
+// done exactly once; the write pump observes done and exits, and senders
+// select on done so they never block on a dead connection.
 type wsConn struct {
-	conn  *websocket.Conn
-	send  chan []byte
-	slug  string
-	token string // session token presented on connect; "" for spectators
+	conn      *websocket.Conn
+	send      chan []byte
+	slug      string
+	token     string // session token presented on connect; "" for spectators
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// close signals that the connection is finished. It is safe to call from any
+// goroutine any number of times; done is closed exactly once.
+func (c *wsConn) close() {
+	c.closeOnce.Do(func() { close(c.done) })
 }
 
 // hub tracks live WebSocket connections per vote slug so that state changes
@@ -116,6 +130,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		send:  make(chan []byte, wsSendBuffer),
 		slug:  slug,
 		token: token,
+		done:  make(chan struct{}),
 	}
 	s.hub.add(c)
 
@@ -131,7 +146,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) wsReadPump(c *wsConn) {
 	defer func() {
 		s.hub.remove(c)
-		close(c.send)
+		c.close()
 		c.conn.Close()
 	}()
 	c.conn.SetReadLimit(4096)
@@ -143,8 +158,8 @@ func (s *Server) wsReadPump(c *wsConn) {
 }
 
 // wsWritePump is the sole writer goroutine for c.conn, serializing snapshot
-// pushes and periodic pings. It exits (closing the connection) when send is
-// closed or a write fails.
+// pushes and periodic pings. It exits (closing the connection) when c.done is
+// signaled or a write fails.
 func (s *Server) wsWritePump(c *wsConn) {
 	ticker := time.NewTicker(wsPingPeriod)
 	defer func() {
@@ -153,15 +168,15 @@ func (s *Server) wsWritePump(c *wsConn) {
 	}()
 	for {
 		select {
-		case msg, ok := <-c.send:
+		case msg := <-c.send:
 			c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
-			if !ok {
-				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
 			if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 				return
 			}
+		case <-c.done:
+			c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
+			_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+			return
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
@@ -181,10 +196,12 @@ func (s *Server) pushSnapshot(c *wsConn) {
 	}
 	select {
 	case c.send <- data:
+	case <-c.done:
+		// Connection is already tearing down; nothing to enqueue.
 	default:
 		log.Printf("ws: dropping slow connection for vote %s", c.slug)
 		s.hub.remove(c)
-		close(c.send)
+		c.close()
 	}
 }
 
@@ -231,4 +248,10 @@ func (s *Server) broadcast(slug string) {
 	for _, c := range s.hub.connsFor(slug) {
 		s.pushSnapshot(c)
 	}
+}
+
+// Broadcast forces a fresh personalized snapshot out to every live connection
+// for slug. It is the exported form of the internal onChange fan-out.
+func (s *Server) Broadcast(slug string) {
+	s.broadcast(slug)
 }

@@ -6,12 +6,31 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/quickvote/quickvote/internal/store"
 )
+
+// maxRequestBody caps the size of a JSON request body. Every legitimate
+// payload (a title <=200 chars, a name <=50, a ballot over a bounded option
+// set) fits comfortably; the cap stops an anonymous client from streaming a
+// huge body that would be fully buffered in memory before validation.
+const maxRequestBody = 64 << 10 // 64 KiB
+
+// maxBytes returns middleware that caps each request body at n bytes via
+// http.MaxBytesReader, so an oversized body is truncated (and Decode errors)
+// instead of being read entirely into memory.
+func maxBytes(n int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, n)
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
 // Server wires the chi router to a Store and (optionally) a static asset
 // filesystem for the built SPA. It implements http.Handler.
@@ -22,12 +41,35 @@ type Server struct {
 	scheduler *Scheduler
 	onChange  func(slug string)
 	hub       *hub
+
+	// slugMu guards slugLocks; each per-slug mutex serializes phase-affecting
+	// mutations for one vote so read-modify-write transitions (ballot +
+	// auto-advance, advance, revote, timer firing) are atomic per room and
+	// can't double-score or drop a ballot under concurrent requests.
+	slugMu    sync.Mutex
+	slugLocks map[string]*sync.Mutex
+}
+
+// lockSlug acquires the per-slug mutation lock for slug and returns its unlock
+// function (call via defer). Store operations acquire their own lock strictly
+// inside this one, so the ordering is fixed and deadlock-free.
+func (s *Server) lockSlug(slug string) func() {
+	s.slugMu.Lock()
+	mu, ok := s.slugLocks[slug]
+	if !ok {
+		mu = &sync.Mutex{}
+		s.slugLocks[slug] = mu
+	}
+	s.slugMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
 }
 
 // New builds a Server. staticFS may be nil (e.g. in tests) in which case no
 // static/SPA routes are registered — only /api.
 func New(st *store.Store, staticFS fs.FS) *Server {
-	s := &Server{store: st, static: staticFS, hub: newHub()}
+	s := &Server{store: st, static: staticFS, hub: newHub(), slugLocks: map[string]*sync.Mutex{}}
 	s.scheduler = NewScheduler(func(slug string) { s.timerFired(slug) })
 	s.router = s.routes()
 	s.onChange = s.broadcast
@@ -58,15 +100,15 @@ func (s *Server) routes() chi.Router {
 	r.Use(middleware.Recoverer)
 
 	r.Route("/api/votes", func(r chi.Router) {
-		r.Post("/", s.handleCreateVote)
+		r.With(maxBytes(maxRequestBody)).Post("/", s.handleCreateVote)
 		r.Route("/{slug}", func(r chi.Router) {
 			r.Get("/", s.handleGetVote)
-			r.Post("/join", s.handleJoin)
-			r.Post("/suggestions", s.handleCreateSuggestion)
+			r.With(maxBytes(maxRequestBody)).Post("/join", s.handleJoin)
+			r.With(maxBytes(maxRequestBody)).Post("/suggestions", s.handleCreateSuggestion)
 			r.Delete("/suggestions/{id}", s.handleDeleteSuggestion)
-			r.Put("/ballot", s.handlePutBallot)
-			r.Post("/advance", s.handleAdvance)
-			r.Post("/revote", s.handleRevote)
+			r.With(maxBytes(maxRequestBody)).Put("/ballot", s.handlePutBallot)
+			r.With(maxBytes(maxRequestBody)).Post("/advance", s.handleAdvance)
+			r.With(maxBytes(maxRequestBody)).Post("/revote", s.handleRevote)
 			r.Get("/ws", s.handleWS)
 		})
 	})
