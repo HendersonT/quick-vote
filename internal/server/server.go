@@ -21,14 +21,16 @@ type Server struct {
 	router    chi.Router
 	scheduler *Scheduler
 	onChange  func(slug string)
+	hub       *hub
 }
 
 // New builds a Server. staticFS may be nil (e.g. in tests) in which case no
 // static/SPA routes are registered — only /api.
 func New(st *store.Store, staticFS fs.FS) *Server {
-	s := &Server{store: st, static: staticFS}
+	s := &Server{store: st, static: staticFS, hub: newHub()}
 	s.scheduler = NewScheduler(func(slug string) { s.timerFired(slug) })
 	s.router = s.routes()
+	s.onChange = s.broadcast
 	return s
 }
 
@@ -65,6 +67,7 @@ func (s *Server) routes() chi.Router {
 			r.Put("/ballot", s.handlePutBallot)
 			r.Post("/advance", s.handleAdvance)
 			r.Post("/revote", s.handleRevote)
+			r.Get("/ws", s.handleWS)
 		})
 	})
 
