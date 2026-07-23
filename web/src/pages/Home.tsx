@@ -1,8 +1,14 @@
 import { useState, type FormEvent } from "react";
 import { createVote } from "../api";
 import { navigate } from "../App";
-import { saveSession } from "../session";
-import type { Settings, SuggestAdvanceMode, Tiebreaker, VoteAdvanceMode } from "../types";
+import { addToHistory, getHistory, saveSession } from "../session";
+import type {
+  RunoffFallback,
+  Settings,
+  SuggestAdvanceMode,
+  Tiebreaker,
+  VoteAdvanceMode,
+} from "../types";
 
 const DEFAULTS = {
   maxSuggestionsPerUser: 3,
@@ -13,6 +19,9 @@ const DEFAULTS = {
   survivalThreshold: 1,
   tiebreaker: "most-backers" as Tiebreaker,
   revoteThresholdPct: 33,
+  vetoCost: 0,
+  voteScalingExponent: 2,
+  runoffFallback: "random" as RunoffFallback,
 };
 
 /** Parses a "minutes, blank = off" field into seconds (0 = off). */
@@ -22,6 +31,15 @@ function minutesToSecs(raw: string): number {
   const minutes = Number(trimmed);
   if (!Number.isFinite(minutes) || minutes <= 0) return 0;
   return Math.round(minutes * 60);
+}
+
+/** Relative-ish date for the recent-votes list: "today", "3d ago", or a date. */
+function formatHistoryDate(ts: number): string {
+  const days = Math.floor((Date.now() - ts) / 86_400_000);
+  if (days <= 0) return "today";
+  if (days === 1) return "1d ago";
+  if (days < 30) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString();
 }
 
 export default function Home() {
@@ -44,15 +62,26 @@ export default function Home() {
   );
   const [survivalThreshold, setSurvivalThreshold] = useState(DEFAULTS.survivalThreshold);
   const [tiebreaker, setTiebreaker] = useState<Tiebreaker>(DEFAULTS.tiebreaker);
+  const [runoffFallback, setRunoffFallback] = useState<RunoffFallback>(
+    DEFAULTS.runoffFallback,
+  );
   const [revoteThresholdPct, setRevoteThresholdPct] = useState(
     DEFAULTS.revoteThresholdPct,
   );
   const [suggestTimerMinutes, setSuggestTimerMinutes] = useState("");
   const [voteTimerMinutes, setVoteTimerMinutes] = useState("");
+  const [vetoCost, setVetoCost] = useState(DEFAULTS.vetoCost);
+  const [voteScalingExponent, setVoteScalingExponent] = useState(
+    DEFAULTS.voteScalingExponent,
+  );
 
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  const history = getHistory();
+  const needsSuggestAdvanceCount =
+    suggestAdvanceMode === "count" || suggestAdvanceMode === "suggestion-count";
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -83,13 +112,16 @@ export default function Home() {
       maxSuggestionsPerUser,
       creditsPerOption,
       suggestAdvanceMode,
-      suggestAdvanceCount: suggestAdvanceMode === "count" ? suggestAdvanceCount : 0,
+      suggestAdvanceCount: needsSuggestAdvanceCount ? suggestAdvanceCount : 0,
       voteAdvanceMode,
       survivalThreshold,
       tiebreaker,
+      runoffFallback,
       revoteThresholdPct,
       suggestTimerSecs: minutesToSecs(suggestTimerMinutes),
       voteTimerSecs: minutesToSecs(voteTimerMinutes),
+      vetoCost,
+      voteScalingExponent,
     };
 
     setSubmitting(true);
@@ -100,6 +132,7 @@ export default function Home() {
         settings,
       );
       saveSession(slug, { sessionToken, creatorToken, name: trimmedName });
+      addToHistory(slug, trimmedTitle);
       navigate(`/v/${slug}`);
     } catch (err) {
       setServerError(err instanceof Error ? err.message : "Failed to create vote.");
@@ -190,16 +223,21 @@ export default function Home() {
             >
               <option value="manual">Manual (creator advances)</option>
               <option value="count">After N people have suggested</option>
+              <option value="suggestion-count">After N total suggestions</option>
+              <option value="all-done">When everyone marks done</option>
             </select>
-            {suggestAdvanceMode === "count" && (
+            {needsSuggestAdvanceCount && (
               <div className="field">
                 <label htmlFor="suggestAdvanceCount">
-                  Number of submitters needed
+                  {suggestAdvanceMode === "count"
+                    ? "Number of submitters needed"
+                    : "Number of suggestions needed"}
                 </label>
                 <input
                   id="suggestAdvanceCount"
                   type="number"
                   min={1}
+                  max={1000}
                   value={suggestAdvanceCount}
                   onChange={(e) => setSuggestAdvanceCount(Number(e.target.value))}
                 />
@@ -229,7 +267,42 @@ export default function Home() {
               onChange={(e) => setSurvivalThreshold(Number(e.target.value))}
             />
             <p className="field-hint">
-              0 disables vetoes; N = minimum credits an option needs to survive.
+              0 disables the threshold; N = minimum credits an option needs to
+              survive.
+            </p>
+          </div>
+
+          <div className="field">
+            <label htmlFor="vetoCost">Veto cost</label>
+            <input
+              id="vetoCost"
+              type="number"
+              min={0}
+              max={100}
+              value={vetoCost}
+              onChange={(e) => setVetoCost(Number(e.target.value))}
+            />
+            <p className="field-hint">
+              0 disables vetoes; N = credits it costs a voter to explicitly veto
+              an option (a vetoed option is eliminated no matter its score).
+            </p>
+          </div>
+
+          <div className="field">
+            <label htmlFor="voteScalingExponent">Vote cost scaling</label>
+            <input
+              id="voteScalingExponent"
+              type="number"
+              min={1}
+              max={4}
+              step={0.5}
+              value={voteScalingExponent}
+              onChange={(e) => setVoteScalingExponent(Number(e.target.value))}
+            />
+            <p className="field-hint">
+              Cost of stacking v credits on one option = v raised to this power
+              (1 = linear, 2 = quadratic default, higher = steeper penalty for
+              piling on).
             </p>
           </div>
 
@@ -243,7 +316,26 @@ export default function Home() {
               <option value="most-backers">Most distinct backers, then random</option>
               <option value="random">Random</option>
               <option value="creator">Creator picks</option>
+              <option value="earliest">Earliest suggestion wins</option>
+              <option value="runoff">Runoff re-vote among tied options</option>
             </select>
+            {tiebreaker === "runoff" && (
+              <div className="field">
+                <label htmlFor="runoffFallback">
+                  Fallback if the runoff ties again
+                </label>
+                <select
+                  id="runoffFallback"
+                  value={runoffFallback}
+                  onChange={(e) => setRunoffFallback(e.target.value as RunoffFallback)}
+                >
+                  <option value="most-backers">Most distinct backers, then random</option>
+                  <option value="random">Random</option>
+                  <option value="creator">Creator picks</option>
+                  <option value="earliest">Earliest suggestion wins</option>
+                </select>
+              </div>
+            )}
           </div>
 
           <div className="field">
@@ -291,6 +383,28 @@ export default function Home() {
           </button>
         </div>
       </form>
+
+      {history.length > 0 && (
+        <section className="recent-votes">
+          <h2>Recent votes</h2>
+          <ul className="recent-votes-list">
+            {history.map((entry) => (
+              <li key={entry.slug} className="recent-votes-item">
+                <a
+                  href={`/v/${entry.slug}`}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    navigate(`/v/${entry.slug}`);
+                  }}
+                >
+                  {entry.title}
+                </a>
+                <span className="recent-votes-date">{formatHistoryDate(entry.ts)}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </main>
   );
 }

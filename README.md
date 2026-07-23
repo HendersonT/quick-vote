@@ -30,17 +30,33 @@ docker run -d -p 8080:8080 -v quickvote-data:/data quickvote
 Three phases move in order: **suggesting → voting → results**.
 
 1. **Suggesting** — participants add options (subject to a per-user cap).
+   Anyone can mark themselves "done suggesting" at any point (even with zero
+   suggestions) — it doesn't stop them adding or deleting more afterwards, but
+   feeds the `all-done` advance rule below.
 2. **Voting** — everyone gets a shared budget of `credits per option × number of
-   options`. Casting `v` votes on one option costs `v²` credits, so spreading
-   support is cheap and piling onto one option is expensive. You can resubmit
-   your ballot until the phase ends.
+   options`. Casting `v` votes on one option costs `v` raised to the vote's
+   cost-scaling exponent (2 = quadratic by default, so spreading support is
+   cheap and piling onto one option is expensive; 1 = linear; up to 4 for a
+   much steeper penalty). You can resubmit your ballot until the phase ends.
+   If vetoes are enabled, a voter can spend a flat credit cost to explicitly
+   veto an option instead of allocating credits to it.
 3. **Results** — each option's score is the sum of votes cast on it. Options
-   below the survival threshold are vetoed; the highest surviving score wins,
-   with ties resolved by the configured tiebreaker. Anyone can call for a
-   re-vote; once enough people do, ballots clear and the room returns to voting.
+   below the survival threshold, or explicitly vetoed by anyone, are
+   eliminated; the highest surviving score wins, with ties resolved by the
+   configured tiebreaker. The `runoff` tiebreaker instead reopens voting on
+   just the tied options (ballots cleared) and resolves a second tie with its
+   fallback rule, guaranteeing an outcome after one extra round. Anyone can
+   call for a re-vote; once enough people do, ballots clear and the room
+   returns to voting.
 
 Phase changes and every other update are pushed live over a WebSocket, so all
 open browsers stay in sync.
+
+Data is kept indefinitely in SQLite — nothing is pruned or expired. A vote's
+room stays reachable at its `/v/<slug>` link forever, and each browser also
+keeps a local "recent votes" list (in `localStorage`, not synced anywhere) so
+you can find your way back to rooms you created or joined without keeping the
+link.
 
 ## Settings glossary
 
@@ -51,10 +67,13 @@ Set at creation time (the last few live behind an "Advanced" fold):
 | **Title** | required | Name of the vote, e.g. "Friday game night". |
 | **Max suggestions per user** | 3 | Cap on how many options each participant may add (1–20). |
 | **Credits per option** | 3 | Budget multiplier. Total budget = this × number of options. Higher = more expressive ballots. |
-| **Suggestion-phase advance rule** | manual | `manual` (creator advances) or `count:N` (auto-advance once N distinct participants have each submitted at least one suggestion). |
+| **Suggestion-phase advance rule** | manual | `manual` (creator advances), `count:N` (N distinct participants have each submitted at least one suggestion), `suggestion-count:N` (N total suggestions submitted, by anyone), or `all-done` (every current participant has marked themselves "done suggesting"). |
 | **Voting-phase advance rule** | all-voted | `manual` or `all-voted` (auto-advance once every current participant has submitted a ballot). |
-| **Survival threshold** | 1 | Minimum total score an option needs to avoid being vetoed. `0` disables vetoes; the default `1` means a total score of zero is eliminated. Raise it to require broader support. |
-| **Tiebreaker** | most-backers | How a tie for the top score is broken: `most-backers` (most distinct voters, then random), `random`, or `creator` (results pause and the creator picks among the tied options). |
+| **Survival threshold** | 1 | Minimum total score an option needs to survive. `0` disables the threshold; the default `1` means a total score of zero is eliminated. Raise it to require broader support. |
+| **Veto cost** | 0 (off) | Credits a voter spends to explicitly veto an option (ballot value `-1`) instead of allocating credits to it. `0` disables vetoing. A vetoed option is eliminated no matter its score; results show "vetoed by N voter(s)", distinct from an under-threshold elimination. |
+| **Vote cost scaling** | 2.0 (quadratic) | Exponent in the cost formula `ceil(votes ^ exponent)`, 1.0–4.0. `1` = linear cost, `2` = the original quadratic cost, higher values penalize concentrating credits on one option more steeply. |
+| **Tiebreaker** | most-backers | How a tie for the top score is broken: `most-backers` (most distinct voters, then random), `random`, `creator` (results pause and the creator picks among the tied options), `earliest` (earliest-suggested tied option wins), or `runoff` (reopen voting on just the tied options, ballots cleared; a repeat tie resolves via the fallback below). |
+| **Runoff fallback** | random | Only used when tiebreaker is `runoff`: how a tie *within* the runoff round itself is resolved (`most-backers`, `random`, `creator`, or `earliest` — never another runoff, so it always terminates). |
 | **Re-vote threshold** | 33% | Percentage of current participants whose re-vote calls are needed to send the room back to voting (rounded up, minimum 1). |
 | **Suggestion timer** | off | Optional duration; when it expires the suggestion phase auto-advances (held if fewer than 2 options exist). |
 | **Voting timer** | off | Optional duration; when it expires the voting phase auto-advances and results are scored. |

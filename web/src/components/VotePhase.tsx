@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { putBallot } from "../api";
-import { ballotCost, canIncrement, remaining } from "../budget";
+import { ballotCost, canIncrement, remaining, voteCost } from "../budget";
 import type { RoomState } from "../types";
 
 interface VotePhaseProps {
@@ -9,7 +9,14 @@ interface VotePhaseProps {
   state: RoomState;
 }
 
-/** Ballot with per-option steppers, a live budget meter, and submit. */
+/** Human-readable description of the vote's cost-scaling exponent. */
+function scalingHint(exponent: number): string {
+  if (exponent === 1) return "1 = linear: cost equals votes cast.";
+  if (exponent === 2) return "2 = quadratic: cost is votes squared.";
+  return `${exponent} = cost grows as votes^${exponent}.`;
+}
+
+/** Ballot with per-option steppers, veto toggles, a live budget meter, and submit. */
 export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps) {
   const [votes, setVotes] = useState<Record<string, number>>(() => state.you?.ballot ?? {});
   const [error, setError] = useState<string | null>(null);
@@ -17,6 +24,12 @@ export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps)
   const [submitted, setSubmitted] = useState(false);
 
   const budget = state.budget;
+  const exponent = state.settings.voteScalingExponent;
+  const vetoCost = state.settings.vetoCost;
+  const vetoEnabled = vetoCost > 0;
+  // Only active options are votable — outside a runoff round every option is
+  // active, so this is a no-op in the common case (F5).
+  const votableOptions = state.options.filter((o) => o.active);
 
   // Prefill (or re-prefill on reconnect) from the saved ballot. Every WS
   // snapshot arrives as a freshly-parsed object, so keying this effect on the
@@ -31,12 +44,12 @@ export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedBallotKey]);
 
-  const spent = ballotCost(votes);
-  const left = remaining(votes, budget);
+  const spent = ballotCost(votes, exponent, vetoCost);
+  const left = remaining(votes, budget, exponent, vetoCost);
 
   function increment(optionId: string) {
-    if (!canIncrement(votes, optionId, budget)) return;
-    setVotes((v) => ({ ...v, [optionId]: (v[optionId] ?? 0) + 1 }));
+    if (!canIncrement(votes, optionId, budget, exponent, vetoCost)) return;
+    setVotes((v) => ({ ...v, [optionId]: Math.max(0, v[optionId] ?? 0) + 1 }));
   }
 
   function decrement(optionId: string) {
@@ -47,9 +60,22 @@ export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps)
     });
   }
 
+  /** Toggling veto clears any credits the voter had on that option. */
+  function toggleVeto(optionId: string) {
+    setVotes((v) => {
+      const next = { ...v };
+      if (next[optionId] === -1) {
+        delete next[optionId];
+      } else {
+        next[optionId] = -1;
+      }
+      return next;
+    });
+  }
+
   function nextCost(optionId: string): number {
     const v = votes[optionId] ?? 0;
-    return (v + 1) * (v + 1) - v * v;
+    return voteCost(v + 1, exponent) - (v > 0 ? voteCost(v, exponent) : 0);
   }
 
   async function handleSubmit() {
@@ -70,6 +96,11 @@ export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps)
   return (
     <section className="vote-phase">
       <h2>Vote</h2>
+
+      {state.runoff && (
+        <p className="runoff-banner">Runoff vote — tied options only.</p>
+      )}
+
       <div className={`budget-meter ${left < 0 ? "over-budget" : ""}`} role="status">
         <div className="budget-meter-bar">
           <div
@@ -80,6 +111,7 @@ export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps)
         <span className="budget-meter-label">
           {spent} of {budget} credits used
         </span>
+        <p className="field-hint budget-hint">{scalingHint(exponent)}</p>
       </div>
 
       {error && (
@@ -89,34 +121,54 @@ export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps)
       )}
 
       <ul className="ballot-list">
-        {state.options.map((o) => {
+        {votableOptions.map((o) => {
           const count = votes[o.id] ?? 0;
-          const canPlus = canIncrement(votes, o.id, budget);
+          const vetoed = count === -1;
+          const canPlus = canIncrement(votes, o.id, budget, exponent, vetoCost);
           return (
-            <li key={o.id} className="ballot-item">
+            <li
+              key={o.id}
+              className={`ballot-item ${vetoed ? "ballot-item-vetoed" : ""}`}
+            >
               <span className="option-title">{o.title}</span>
-              <div className="stepper">
+              {vetoed ? (
+                <span className="veto-active-label">Vetoed</span>
+              ) : (
+                <>
+                  <div className="stepper">
+                    <button
+                      type="button"
+                      className="stepper-button"
+                      onClick={() => decrement(o.id)}
+                      disabled={count <= 0}
+                      aria-label={`Decrease votes for ${o.title}`}
+                    >
+                      −
+                    </button>
+                    <span className="stepper-count">{count}</span>
+                    <button
+                      type="button"
+                      className="stepper-button"
+                      onClick={() => increment(o.id)}
+                      disabled={!canPlus}
+                      aria-label={`Increase votes for ${o.title}`}
+                    >
+                      +
+                    </button>
+                  </div>
+                  <span className="cost-hint">next vote costs {nextCost(o.id)}</span>
+                </>
+              )}
+              {vetoEnabled && (
                 <button
                   type="button"
-                  className="stepper-button"
-                  onClick={() => decrement(o.id)}
-                  disabled={count <= 0}
-                  aria-label={`Decrease votes for ${o.title}`}
+                  className="veto-toggle"
+                  onClick={() => toggleVeto(o.id)}
+                  aria-label={vetoed ? `Undo veto for ${o.title}` : `Veto ${o.title}`}
                 >
-                  −
+                  {vetoed ? "undo veto" : `⛔ veto (−${vetoCost}c)`}
                 </button>
-                <span className="stepper-count">{count}</span>
-                <button
-                  type="button"
-                  className="stepper-button"
-                  onClick={() => increment(o.id)}
-                  disabled={!canPlus}
-                  aria-label={`Increase votes for ${o.title}`}
-                >
-                  +
-                </button>
-              </div>
-              <span className="cost-hint">next vote costs {nextCost(o.id)}</span>
+              )}
             </li>
           );
         })}

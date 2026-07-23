@@ -5,15 +5,17 @@ interface ParticipantListProps {
   phase: Phase;
 }
 
-/** Per-phase status label: suggested / voted / wants re-vote. */
+/** Per-phase status label: done suggesting / voted / wants re-vote. */
 function statusLabel(p: Participant, phase: Phase): string {
-  if (phase === "suggesting") return p.hasSuggested ? "suggested" : "waiting";
+  if (phase === "suggesting") return p.doneSuggesting ? "done" : "suggesting";
   if (phase === "voting") return p.hasVoted ? "voted" : "waiting";
   return p.wantsRevote ? "wants re-vote" : "";
 }
 
+// A participant is "done" in the suggesting phase iff they've explicitly
+// marked doneSuggesting — not merely having submitted a suggestion (F1).
 function isDone(p: Participant, phase: Phase): boolean {
-  if (phase === "suggesting") return p.hasSuggested;
+  if (phase === "suggesting") return p.doneSuggesting;
   if (phase === "voting") return p.hasVoted;
   return p.wantsRevote;
 }

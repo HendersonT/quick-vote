@@ -106,6 +106,7 @@ func (s *Server) routes() chi.Router {
 			r.With(maxBytes(maxRequestBody)).Post("/join", s.handleJoin)
 			r.With(maxBytes(maxRequestBody)).Post("/suggestions", s.handleCreateSuggestion)
 			r.Delete("/suggestions/{id}", s.handleDeleteSuggestion)
+			r.With(maxBytes(maxRequestBody)).Post("/done-suggesting", s.handleDoneSuggesting)
 			r.With(maxBytes(maxRequestBody)).Put("/ballot", s.handlePutBallot)
 			r.With(maxBytes(maxRequestBody)).Post("/advance", s.handleAdvance)
 			r.With(maxBytes(maxRequestBody)).Post("/revote", s.handleRevote)

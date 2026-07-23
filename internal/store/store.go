@@ -20,12 +20,14 @@ CREATE TABLE IF NOT EXISTS votes (
   slug TEXT PRIMARY KEY, title TEXT NOT NULL,
   phase TEXT NOT NULL DEFAULT 'suggesting',
   settings TEXT NOT NULL, creator_token TEXT NOT NULL,
-  phase_deadline INTEGER, results TEXT, created_at INTEGER NOT NULL);
+  phase_deadline INTEGER, results TEXT, created_at INTEGER NOT NULL,
+  active_options TEXT);
 CREATE TABLE IF NOT EXISTS participants (
   id TEXT PRIMARY KEY, vote_slug TEXT NOT NULL REFERENCES votes(slug),
   name TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
   is_creator INTEGER NOT NULL DEFAULT 0,
-  wants_revote INTEGER NOT NULL DEFAULT 0, joined_at INTEGER NOT NULL);
+  wants_revote INTEGER NOT NULL DEFAULT 0, joined_at INTEGER NOT NULL,
+  done_suggesting INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS options (
   id TEXT PRIMARY KEY, vote_slug TEXT NOT NULL REFERENCES votes(slug),
   participant_id TEXT NOT NULL REFERENCES participants(id),
@@ -37,6 +39,56 @@ CREATE TABLE IF NOT EXISTS ballots (
   PRIMARY KEY (vote_slug, participant_id));
 `
 
+// migrationColumns lists columns added after the initial release that must
+// be additively migrated onto pre-existing databases (CREATE TABLE IF NOT
+// EXISTS does not alter tables that already exist). Each entry is also
+// present in the base schema string above so fresh databases get it from
+// CREATE TABLE directly; this list is what makes it idempotent for old ones.
+var migrationColumns = []struct {
+	table, column, ddl string
+}{
+	{"participants", "done_suggesting", "ALTER TABLE participants ADD COLUMN done_suggesting INTEGER NOT NULL DEFAULT 0"},
+	{"votes", "active_options", "ALTER TABLE votes ADD COLUMN active_options TEXT"},
+}
+
+// migrate adds any columns from migrationColumns missing on tables that
+// already existed before this version, using PRAGMA table_info to detect
+// them (ALTER TABLE ADD COLUMN has no "IF NOT EXISTS" form in SQLite).
+func migrate(db *sql.DB) error {
+	for _, m := range migrationColumns {
+		rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, m.table))
+		if err != nil {
+			return fmt.Errorf("inspect %s columns: %w", m.table, err)
+		}
+		found := false
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notNull, pk int
+			var dflt any
+			if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan %s column info: %w", m.table, err)
+			}
+			if name == m.column {
+				found = true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("list %s columns: %w", m.table, err)
+		}
+		rows.Close()
+		if found {
+			continue
+		}
+		if _, err := db.Exec(m.ddl); err != nil {
+			return fmt.Errorf("add column %s.%s: %w", m.table, m.column, err)
+		}
+	}
+	return nil
+}
+
 // VoteRow mirrors the votes table.
 type VoteRow struct {
 	Slug          string
@@ -47,6 +99,10 @@ type VoteRow struct {
 	PhaseDeadline *int64
 	Results       *string
 	CreatedAt     int64
+	// ActiveOptions is a JSON array of option IDs restricting voting/scoring
+	// to those options (used during a runoff round). nil means all options
+	// are active.
+	ActiveOptions *string
 }
 
 // ParticipantRow mirrors the participants table.
@@ -58,6 +114,10 @@ type ParticipantRow struct {
 	IsCreator   bool
 	WantsRevote bool
 	JoinedAt    int64
+	// DoneSuggesting is the participant's self-reported "I'm done
+	// suggesting" flag, toggled explicitly and independent of how many
+	// suggestions (if any) they've made.
+	DoneSuggesting bool
 }
 
 // OptionRow mirrors the options table.
@@ -97,6 +157,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
 
 	return &Store{db: db}, nil
 }
@@ -112,9 +176,9 @@ func (s *Store) CreateVote(v VoteRow) error {
 	defer s.mu.Unlock()
 
 	_, err := s.db.Exec(
-		`INSERT INTO votes (slug, title, phase, settings, creator_token, phase_deadline, results, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		v.Slug, v.Title, v.Phase, v.Settings, v.CreatorToken, v.PhaseDeadline, v.Results, v.CreatedAt,
+		`INSERT INTO votes (slug, title, phase, settings, creator_token, phase_deadline, results, created_at, active_options)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		v.Slug, v.Title, v.Phase, v.Settings, v.CreatorToken, v.PhaseDeadline, v.Results, v.CreatedAt, v.ActiveOptions,
 	)
 	if err != nil {
 		return fmt.Errorf("create vote: %w", err)
@@ -128,12 +192,12 @@ func (s *Store) GetVote(slug string) (VoteRow, error) {
 	defer s.mu.Unlock()
 
 	row := s.db.QueryRow(
-		`SELECT slug, title, phase, settings, creator_token, phase_deadline, results, created_at
+		`SELECT slug, title, phase, settings, creator_token, phase_deadline, results, created_at, active_options
 		 FROM votes WHERE slug = ?`, slug,
 	)
 	var v VoteRow
 	if err := row.Scan(&v.Slug, &v.Title, &v.Phase, &v.Settings, &v.CreatorToken,
-		&v.PhaseDeadline, &v.Results, &v.CreatedAt); err != nil {
+		&v.PhaseDeadline, &v.Results, &v.CreatedAt, &v.ActiveOptions); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return VoteRow{}, ErrNotFound
 		}
@@ -142,14 +206,15 @@ func (s *Store) GetVote(slug string) (VoteRow, error) {
 	return v, nil
 }
 
-// UpdateVote updates the mutable fields of a vote: phase, deadline, results.
+// UpdateVote updates the mutable fields of a vote: phase, deadline, results,
+// active_options.
 func (s *Store) UpdateVote(v VoteRow) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	res, err := s.db.Exec(
-		`UPDATE votes SET phase = ?, phase_deadline = ?, results = ? WHERE slug = ?`,
-		v.Phase, v.PhaseDeadline, v.Results, v.Slug,
+		`UPDATE votes SET phase = ?, phase_deadline = ?, results = ?, active_options = ? WHERE slug = ?`,
+		v.Phase, v.PhaseDeadline, v.Results, v.ActiveOptions, v.Slug,
 	)
 	if err != nil {
 		return fmt.Errorf("update vote: %w", err)
@@ -200,9 +265,9 @@ func (s *Store) AddParticipant(p ParticipantRow) error {
 	defer s.mu.Unlock()
 
 	_, err := s.db.Exec(
-		`INSERT INTO participants (id, vote_slug, name, token, is_creator, wants_revote, joined_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.VoteSlug, p.Name, p.Token, boolToInt(p.IsCreator), boolToInt(p.WantsRevote), p.JoinedAt,
+		`INSERT INTO participants (id, vote_slug, name, token, is_creator, wants_revote, joined_at, done_suggesting)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.VoteSlug, p.Name, p.Token, boolToInt(p.IsCreator), boolToInt(p.WantsRevote), p.JoinedAt, boolToInt(p.DoneSuggesting),
 	)
 	if err != nil {
 		return fmt.Errorf("add participant: %w", err)
@@ -216,7 +281,7 @@ func (s *Store) Participants(slug string) ([]ParticipantRow, error) {
 	defer s.mu.Unlock()
 
 	rows, err := s.db.Query(
-		`SELECT id, vote_slug, name, token, is_creator, wants_revote, joined_at
+		`SELECT id, vote_slug, name, token, is_creator, wants_revote, joined_at, done_suggesting
 		 FROM participants WHERE vote_slug = ? ORDER BY joined_at ASC, rowid ASC`, slug,
 	)
 	if err != nil {
@@ -227,12 +292,13 @@ func (s *Store) Participants(slug string) ([]ParticipantRow, error) {
 	var out []ParticipantRow
 	for rows.Next() {
 		var p ParticipantRow
-		var isCreator, wantsRevote int
-		if err := rows.Scan(&p.ID, &p.VoteSlug, &p.Name, &p.Token, &isCreator, &wantsRevote, &p.JoinedAt); err != nil {
+		var isCreator, wantsRevote, doneSuggesting int
+		if err := rows.Scan(&p.ID, &p.VoteSlug, &p.Name, &p.Token, &isCreator, &wantsRevote, &p.JoinedAt, &doneSuggesting); err != nil {
 			return nil, fmt.Errorf("scan participant: %w", err)
 		}
 		p.IsCreator = isCreator != 0
 		p.WantsRevote = wantsRevote != 0
+		p.DoneSuggesting = doneSuggesting != 0
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -247,12 +313,12 @@ func (s *Store) ParticipantByToken(slug, token string) (ParticipantRow, error) {
 	defer s.mu.Unlock()
 
 	row := s.db.QueryRow(
-		`SELECT id, vote_slug, name, token, is_creator, wants_revote, joined_at
+		`SELECT id, vote_slug, name, token, is_creator, wants_revote, joined_at, done_suggesting
 		 FROM participants WHERE vote_slug = ? AND token = ?`, slug, token,
 	)
 	var p ParticipantRow
-	var isCreator, wantsRevote int
-	if err := row.Scan(&p.ID, &p.VoteSlug, &p.Name, &p.Token, &isCreator, &wantsRevote, &p.JoinedAt); err != nil {
+	var isCreator, wantsRevote, doneSuggesting int
+	if err := row.Scan(&p.ID, &p.VoteSlug, &p.Name, &p.Token, &isCreator, &wantsRevote, &p.JoinedAt, &doneSuggesting); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ParticipantRow{}, ErrNotFound
 		}
@@ -260,6 +326,7 @@ func (s *Store) ParticipantByToken(slug, token string) (ParticipantRow, error) {
 	}
 	p.IsCreator = isCreator != 0
 	p.WantsRevote = wantsRevote != 0
+	p.DoneSuggesting = doneSuggesting != 0
 	return p, nil
 }
 
@@ -277,6 +344,27 @@ func (s *Store) SetWantsRevote(participantID string, want bool) error {
 	n, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("set wants_revote rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetDoneSuggesting sets a participant's "I'm done suggesting" flag.
+func (s *Store) SetDoneSuggesting(participantID string, done bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	res, err := s.db.Exec(
+		`UPDATE participants SET done_suggesting = ? WHERE id = ?`, boolToInt(done), participantID,
+	)
+	if err != nil {
+		return fmt.Errorf("set done_suggesting: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set done_suggesting rows affected: %w", err)
 	}
 	if n == 0 {
 		return ErrNotFound

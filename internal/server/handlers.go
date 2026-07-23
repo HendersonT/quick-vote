@@ -55,6 +55,13 @@ type settingsPatch struct {
 	RevoteThresholdPct    *int    `json:"revoteThresholdPct"`
 	SuggestTimerSecs      *int    `json:"suggestTimerSecs"`
 	VoteTimerSecs         *int    `json:"voteTimerSecs"`
+	// VetoCost, VoteScalingExponent and RunoffFallback are the three
+	// "advanced options" settings added after the original release (see
+	// domain.Settings). Omitting them from the create request leaves
+	// domain.DefaultSettings()'s explicit defaults in place.
+	VetoCost            *int     `json:"vetoCost"`
+	VoteScalingExponent *float64 `json:"voteScalingExponent"`
+	RunoffFallback      *string  `json:"runoffFallback"`
 }
 
 func (p *settingsPatch) applyTo(s domain.Settings) domain.Settings {
@@ -90,6 +97,15 @@ func (p *settingsPatch) applyTo(s domain.Settings) domain.Settings {
 	}
 	if p.VoteTimerSecs != nil {
 		s.VoteTimerSecs = *p.VoteTimerSecs
+	}
+	if p.VetoCost != nil {
+		s.VetoCost = *p.VetoCost
+	}
+	if p.VoteScalingExponent != nil {
+		s.VoteScalingExponent = *p.VoteScalingExponent
+	}
+	if p.RunoffFallback != nil {
+		s.RunoffFallback = domain.Tiebreaker(*p.RunoffFallback)
 	}
 	return s
 }
@@ -366,11 +382,16 @@ func (s *Server) requireParticipant(w http.ResponseWriter, r *http.Request, slug
 	return p, true
 }
 
-// parseSettings decodes the settings JSON stored on a vote row.
+// parseSettings decodes the settings JSON stored on a vote row and applies
+// Normalized() so a vote created before the "advanced options" round (whose
+// stored JSON lacks voteScalingExponent/runoffFallback) still gets today's
+// defaults for them instead of Go's zero value.
 func parseSettings(v store.VoteRow) (domain.Settings, error) {
 	var s domain.Settings
-	err := json.Unmarshal([]byte(v.Settings), &s)
-	return s, err
+	if err := json.Unmarshal([]byte(v.Settings), &s); err != nil {
+		return domain.Settings{}, err
+	}
+	return s.Normalized(), nil
 }
 
 // writeState reloads the full room state for slug and writes it as a 200
@@ -482,6 +503,7 @@ func (s *Server) handleCreateSuggestion(w http.ResponseWriter, r *http.Request) 
 // suggestions, and only during the suggesting phase.
 func (s *Server) handleDeleteSuggestion(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
+	defer s.lockSlug(slug)()
 	v, ok := s.getVoteOr404(w, slug)
 	if !ok {
 		return
@@ -504,6 +526,13 @@ func (s *Server) handleDeleteSuggestion(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if settings, err := parseSettings(v); err == nil {
+		// A deletion can only ever reduce a suggestion/suggester count, so
+		// this re-check can't newly satisfy "count"/"suggestion-count" — but
+		// it's cheap and keeps every mutation that could plausibly affect
+		// auto-advance flowing through the same recheck path (see F2).
+		s.maybeAutoAdvanceSuggest(slug, settings)
+	}
 	s.changed(slug)
 	s.writeState(w, slug, &p)
 }
@@ -548,12 +577,17 @@ func (s *Server) handlePutBallot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	optionIDs := make([]string, 0, len(opts))
-	for _, o := range opts {
-		optionIDs = append(optionIDs, o.ID)
+	active, err := decodeActiveOptions(v)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
-	budget := settings.CreditsPerOption * len(opts)
-	if err := domain.ValidateBallot(req.Votes, optionIDs, budget); err != nil {
+	// During a runoff round (active_options set), only the tied options are
+	// votable and the budget shrinks to match — everything else is
+	// unreachable via optionIDs, so ValidateBallot rejects it as unknown.
+	optionIDs := activeOptionIDs(opts, active)
+	budget := settings.CreditsPerOption * len(optionIDs)
+	if err := domain.ValidateBallot(req.Votes, optionIDs, budget, settings.VoteScalingExponent, settings.VetoCost); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -673,6 +707,10 @@ func (s *Server) handleRevote(w http.ResponseWriter, r *http.Request) {
 		v.Phase = string(domain.PhaseVoting)
 		v.Results = nil
 		v.PhaseDeadline = nil
+		// A threshold re-vote always resets to a clean slate: every option
+		// (not just whatever was active during a prior runoff) is back in
+		// play, per F5.
+		v.ActiveOptions = nil
 		if settings.VoteTimerSecs > 0 {
 			d := time.Now().Add(time.Duration(settings.VoteTimerSecs) * time.Second).Unix()
 			v.PhaseDeadline = &d
@@ -688,23 +726,84 @@ func (s *Server) handleRevote(w http.ResponseWriter, r *http.Request) {
 	s.writeState(w, slug, &p)
 }
 
-// maybeAutoAdvanceSuggest advances suggesting -> voting when the count-based
-// advance rule is configured and satisfied.
-func (s *Server) maybeAutoAdvanceSuggest(slug string, settings domain.Settings) {
-	if settings.SuggestAdvanceMode != "count" || settings.SuggestAdvanceCount < 1 {
+// handleDoneSuggesting implements POST /api/votes/{slug}/done-suggesting: it
+// toggles the caller's "I'm done suggesting" flag (F1). Valid only during the
+// suggesting phase. Toggling does not itself add/remove suggestions and is
+// not cleared by later suggestion activity — it's a purely explicit signal
+// that maybeAutoAdvanceSuggest's "all-done" mode reads.
+func (s *Server) handleDoneSuggesting(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	defer s.lockSlug(slug)()
+	v, ok := s.getVoteOr404(w, slug)
+	if !ok {
 		return
 	}
+	p, ok := s.requireParticipant(w, r, slug)
+	if !ok {
+		return
+	}
+	if v.Phase != string(domain.PhaseSuggesting) {
+		writeError(w, http.StatusConflict, "done-suggesting only applies during the suggesting phase")
+		return
+	}
+
+	if err := s.store.SetDoneSuggesting(p.ID, !p.DoneSuggesting); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	if settings, err := parseSettings(v); err == nil {
+		s.maybeAutoAdvanceSuggest(slug, settings)
+	}
+	s.changed(slug)
+	s.writeState(w, slug, &p)
+}
+
+// maybeAutoAdvanceSuggest advances suggesting -> voting when the configured
+// suggest-advance rule is satisfied (F2). All modes still require at least 2
+// options total; advancePhase itself enforces that (errNeedTwoSuggestions),
+// this is just a cheap short-circuit to avoid a pointless attempt.
+func (s *Server) maybeAutoAdvanceSuggest(slug string, settings domain.Settings) {
 	opts, err := s.store.Options(slug)
 	if err != nil || len(opts) < 2 {
 		return
 	}
-	distinct := make(map[string]bool, len(opts))
-	for _, o := range opts {
-		distinct[o.ParticipantID] = true
+
+	switch settings.SuggestAdvanceMode {
+	case "count":
+		// N distinct participants have suggested (unchanged legacy semantics).
+		if settings.SuggestAdvanceCount < 1 {
+			return
+		}
+		distinct := make(map[string]bool, len(opts))
+		for _, o := range opts {
+			distinct[o.ParticipantID] = true
+		}
+		if len(distinct) < settings.SuggestAdvanceCount {
+			return
+		}
+	case "suggestion-count":
+		// The total number of suggestions (not distinct suggesters) has
+		// reached the configured count.
+		if settings.SuggestAdvanceCount < 1 || len(opts) < settings.SuggestAdvanceCount {
+			return
+		}
+	case "all-done":
+		// Every current participant has explicitly marked themselves done,
+		// regardless of how many suggestions (if any) they made.
+		parts, err := s.store.Participants(slug)
+		if err != nil || len(parts) == 0 {
+			return
+		}
+		for _, pp := range parts {
+			if !pp.DoneSuggesting {
+				return
+			}
+		}
+	default:
+		return // "manual": never auto-advances.
 	}
-	if len(distinct) >= settings.SuggestAdvanceCount {
-		_ = s.advancePhase(slug, false, "")
-	}
+	_ = s.advancePhase(slug, false, "")
 }
 
 // maybeAutoAdvanceVote advances voting -> results when the all-voted rule is

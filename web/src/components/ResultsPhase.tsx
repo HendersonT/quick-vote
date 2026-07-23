@@ -118,10 +118,16 @@ export default function ResultsPhase({
           >
             <div className="score-item-header">
               <span className="option-title">{optionTitle(s.optionId)}</span>
-              {s.eliminated && (
-                <span className="veto-badge">
-                  vetoed — under {state.settings.survivalThreshold} credits
+              {s.vetoCount > 0 ? (
+                <span className="veto-badge veto-badge-explicit">
+                  vetoed by {s.vetoCount} voter{s.vetoCount === 1 ? "" : "s"}
                 </span>
+              ) : (
+                s.eliminated && (
+                  <span className="veto-badge">
+                    eliminated — under {state.settings.survivalThreshold} credits
+                  </span>
+                )
               )}
             </div>
             <div className="score-bar-track">

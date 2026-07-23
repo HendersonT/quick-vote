@@ -210,6 +210,47 @@ a:hover {
   gap: var(--space-4);
 }
 
+.recent-votes {
+  width: 100%;
+  text-align: left;
+  margin-top: var(--space-5);
+}
+
+.recent-votes h2 {
+  font-size: 0.9375rem;
+}
+
+.recent-votes-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.recent-votes-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.recent-votes-item a {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.recent-votes-date {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
 .join-gate,
 .not-found,
 .room-loading {
@@ -424,16 +465,43 @@ button:disabled {
   background: var(--color-accent-soft);
 }
 
-.revote-panel > button {
+.revote-panel > button,
+.done-suggesting-panel > button {
   background: transparent;
   color: var(--color-accent);
   border-color: var(--color-border);
 }
 
-.revote-panel > button:hover:not(:disabled) {
+.revote-panel > button:hover:not(:disabled),
+.done-suggesting-panel > button:hover:not(:disabled) {
   filter: none;
   border-color: var(--color-accent);
   background: var(--color-accent-soft);
+}
+
+/* Small ghost/danger toggle for vetoing a ballot option */
+.veto-toggle {
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  background: transparent;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  font-weight: 500;
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+.veto-toggle:hover:not(:disabled) {
+  filter: none;
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+  background: var(--color-danger-soft);
+}
+
+.ballot-item-vetoed .veto-toggle {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+  background: var(--color-danger-soft);
 }
 
 .creator-controls button {
@@ -691,6 +759,20 @@ button:disabled {
   color: var(--color-text-muted);
 }
 
+.done-suggesting-panel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.done-suggesting-note {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+}
+
 /* ---------------------------------------------------------------------- */
 /* Vote phase                                                             */
 /* ---------------------------------------------------------------------- */
@@ -729,6 +811,20 @@ button:disabled {
   color: var(--color-danger);
 }
 
+.budget-hint {
+  margin: 0;
+}
+
+.runoff-banner {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-warn-soft);
+  color: var(--color-warn);
+  font-weight: 600;
+  font-size: 0.875rem;
+  text-align: center;
+}
+
 .ballot-list {
   display: flex;
   flex-direction: column;
@@ -748,6 +844,16 @@ button:disabled {
 .ballot-item .option-title {
   flex: 1;
   min-width: 120px;
+}
+
+.ballot-item-vetoed {
+  background: var(--color-danger-soft);
+}
+
+.veto-active-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-danger);
 }
 
 .stepper {
@@ -859,14 +965,22 @@ button:disabled {
   margin-bottom: var(--space-2);
 }
 
+/* Under the survival threshold — eliminated by low score, not an explicit
+   veto. Distinguished visually (warn, not danger) from .veto-badge-explicit,
+   which is a voter's deliberate veto (F3). */
 .veto-badge {
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--color-danger);
-  background: var(--color-danger-soft);
+  color: var(--color-warn);
+  background: var(--color-warn-soft);
   padding: 2px var(--space-2);
   border-radius: var(--radius-pill);
   white-space: nowrap;
+}
+
+.veto-badge-explicit {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
 }
 
 .score-bar-track {

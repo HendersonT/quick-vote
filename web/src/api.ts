@@ -127,3 +127,14 @@ export function toggleRevote(
     body: JSON.stringify({}),
   });
 }
+
+export function toggleDoneSuggesting(
+  slug: string,
+  sessionToken: string,
+): Promise<RoomState> {
+  return request<RoomState>(`/votes/${slug}/done-suggesting`, {
+    method: "POST",
+    headers: authHeaders(sessionToken),
+    body: JSON.stringify({}),
+  });
+}

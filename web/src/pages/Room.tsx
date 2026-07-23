@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { advanceVote, getVote } from "../api";
 import Countdown from "../components/Countdown";
 import JoinGate from "../components/JoinGate";
@@ -7,7 +7,7 @@ import ResultsPhase from "../components/ResultsPhase";
 import ShareLink from "../components/ShareLink";
 import SuggestPhase from "../components/SuggestPhase";
 import VotePhase from "../components/VotePhase";
-import { clearSession, getSession, saveSession, type Session } from "../session";
+import { addToHistory, clearSession, getSession, saveSession, type Session } from "../session";
 import type { Phase, RoomState } from "../types";
 import { connectRoom } from "../ws";
 
@@ -28,6 +28,9 @@ export default function Room({ slug }: RoomProps) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [advanceError, setAdvanceError] = useState<string | null>(null);
   const [advancing, setAdvancing] = useState(false);
+  // Guards against re-recording history on every WS broadcast — only the
+  // first snapshot after (re)joining this room needs to bump it (F6).
+  const historyRecorded = useRef(false);
 
   // Before joining, fetch a spectator snapshot so the join gate can show the
   // vote's title and so an unknown slug surfaces a friendly error.
@@ -63,6 +66,10 @@ export default function Room({ slug }: RoomProps) {
         return;
       }
       setState(next);
+      if (!historyRecorded.current) {
+        historyRecorded.current = true;
+        addToHistory(slug, next.title);
+      }
     });
   }, [slug, session]);
 
@@ -70,6 +77,8 @@ export default function Room({ slug }: RoomProps) {
     saveSession(slug, { sessionToken, name });
     setSession({ sessionToken, name });
     setState(joinedState);
+    historyRecorded.current = true;
+    addToHistory(slug, joinedState.title);
   }
 
   async function handleAdvance() {

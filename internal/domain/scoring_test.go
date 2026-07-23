@@ -23,7 +23,7 @@ func TestComputeResults_SimpleWinner(t *testing.T) {
 	ballots := map[string]map[string]int{
 		"p1": {"a": 2, "b": 1},
 	}
-	res := ComputeResults(optionIDs, ballots, 0, TiebreakMostBackers, rand.New(rand.NewSource(1)))
+	res := ComputeResults(optionIDs, ballots, 0, TiebreakConfig{Tiebreaker: TiebreakMostBackers}, rand.New(rand.NewSource(1)))
 	if res.WinnerID != "a" {
 		t.Errorf("WinnerID = %q, want %q", res.WinnerID, "a")
 	}
@@ -39,7 +39,7 @@ func TestComputeResults_ScoreSumsAcrossBallots(t *testing.T) {
 		"p2": {"a": 1},
 		"p3": {"b": 5},
 	}
-	res := ComputeResults(optionIDs, ballots, 0, TiebreakMostBackers, rand.New(rand.NewSource(1)))
+	res := ComputeResults(optionIDs, ballots, 0, TiebreakConfig{Tiebreaker: TiebreakMostBackers}, rand.New(rand.NewSource(1)))
 	if got := scoreOf(t, res, "a").Score; got != 3 {
 		t.Errorf("score a = %d, want 3", got)
 	}
@@ -58,7 +58,7 @@ func TestComputeResults_BackersCountOnlyPositiveVotes(t *testing.T) {
 		"p2": {"a": 0},
 		"p3": {"a": 3},
 	}
-	res := ComputeResults(optionIDs, ballots, 0, TiebreakMostBackers, rand.New(rand.NewSource(1)))
+	res := ComputeResults(optionIDs, ballots, 0, TiebreakConfig{Tiebreaker: TiebreakMostBackers}, rand.New(rand.NewSource(1)))
 	a := scoreOf(t, res, "a")
 	if a.Score != 5 {
 		t.Errorf("score a = %d, want 5", a.Score)
@@ -74,7 +74,7 @@ func TestComputeResults_EliminationThresholdOne(t *testing.T) {
 	ballots := map[string]map[string]int{
 		"p1": {"a": 2, "b": 0},
 	}
-	res := ComputeResults(optionIDs, ballots, 1, TiebreakMostBackers, rand.New(rand.NewSource(1)))
+	res := ComputeResults(optionIDs, ballots, 1, TiebreakConfig{Tiebreaker: TiebreakMostBackers}, rand.New(rand.NewSource(1)))
 	if got := scoreOf(t, res, "a").Eliminated; got {
 		t.Errorf("a eliminated = true, want false (score 2 >= threshold 1)")
 	}
@@ -95,7 +95,7 @@ func TestComputeResults_EliminationThresholdThree(t *testing.T) {
 	ballots := map[string]map[string]int{
 		"p1": {"a": 3, "b": 2},
 	}
-	res := ComputeResults(optionIDs, ballots, 3, TiebreakMostBackers, rand.New(rand.NewSource(1)))
+	res := ComputeResults(optionIDs, ballots, 3, TiebreakConfig{Tiebreaker: TiebreakMostBackers}, rand.New(rand.NewSource(1)))
 	if got := scoreOf(t, res, "a").Eliminated; got {
 		t.Errorf("a eliminated = true, want false (score 3 >= threshold 3)")
 	}
@@ -112,7 +112,7 @@ func TestComputeResults_AllEliminated(t *testing.T) {
 	ballots := map[string]map[string]int{
 		"p1": {"a": 1, "b": 1},
 	}
-	res := ComputeResults(optionIDs, ballots, 5, TiebreakMostBackers, rand.New(rand.NewSource(1)))
+	res := ComputeResults(optionIDs, ballots, 5, TiebreakConfig{Tiebreaker: TiebreakMostBackers}, rand.New(rand.NewSource(1)))
 	if res.WinnerID != "" {
 		t.Errorf("WinnerID = %q, want empty (all eliminated)", res.WinnerID)
 	}
@@ -138,7 +138,7 @@ func TestComputeResults_MostBackersTiebreakPicksMoreBackers(t *testing.T) {
 		"p2": {"b": 2},
 		"p3": {"b": 2},
 	}
-	res := ComputeResults(optionIDs, ballots, 1, TiebreakMostBackers, rand.New(rand.NewSource(1)))
+	res := ComputeResults(optionIDs, ballots, 1, TiebreakConfig{Tiebreaker: TiebreakMostBackers}, rand.New(rand.NewSource(1)))
 	if res.WinnerID != "b" {
 		t.Errorf("WinnerID = %q, want %q (more backers)", res.WinnerID, "b")
 	}
@@ -159,8 +159,8 @@ func TestComputeResults_MostBackersTiebreakStillTiedDeterministicRand(t *testing
 		"p2": {"b": 4},
 	}
 
-	res1 := ComputeResults(optionIDs, ballots, 1, TiebreakMostBackers, rand.New(rand.NewSource(42)))
-	res2 := ComputeResults(optionIDs, ballots, 1, TiebreakMostBackers, rand.New(rand.NewSource(42)))
+	res1 := ComputeResults(optionIDs, ballots, 1, TiebreakConfig{Tiebreaker: TiebreakMostBackers}, rand.New(rand.NewSource(42)))
+	res2 := ComputeResults(optionIDs, ballots, 1, TiebreakConfig{Tiebreaker: TiebreakMostBackers}, rand.New(rand.NewSource(42)))
 
 	if res1.WinnerID == "" {
 		t.Fatalf("expected a winner to be chosen")
@@ -193,8 +193,8 @@ func TestComputeResults_RandomTiebreakDeterministic(t *testing.T) {
 		"p2": {"b": 3},
 		"p3": {"c": 1},
 	}
-	res1 := ComputeResults(optionIDs, ballots, 1, TiebreakRandom, rand.New(rand.NewSource(7)))
-	res2 := ComputeResults(optionIDs, ballots, 1, TiebreakRandom, rand.New(rand.NewSource(7)))
+	res1 := ComputeResults(optionIDs, ballots, 1, TiebreakConfig{Tiebreaker: TiebreakRandom}, rand.New(rand.NewSource(7)))
+	res2 := ComputeResults(optionIDs, ballots, 1, TiebreakConfig{Tiebreaker: TiebreakRandom}, rand.New(rand.NewSource(7)))
 
 	if res1.WinnerID != res2.WinnerID {
 		t.Errorf("same seed produced different winners: %q vs %q", res1.WinnerID, res2.WinnerID)
@@ -220,7 +220,7 @@ func TestComputeResults_CreatorTiebreakPending(t *testing.T) {
 		"p1": {"a": 3},
 		"p2": {"b": 3},
 	}
-	res := ComputeResults(optionIDs, ballots, 1, TiebreakCreator, rand.New(rand.NewSource(1)))
+	res := ComputeResults(optionIDs, ballots, 1, TiebreakConfig{Tiebreaker: TiebreakCreator}, rand.New(rand.NewSource(1)))
 	if !res.TiePending {
 		t.Errorf("TiePending = false, want true")
 	}
@@ -246,7 +246,7 @@ func TestComputeResults_ScoresSortedDescStableForTies(t *testing.T) {
 	ballots := map[string]map[string]int{
 		"p1": {"a": 3, "b": 5, "c": 3},
 	}
-	res := ComputeResults(optionIDs, ballots, 0, TiebreakMostBackers, rand.New(rand.NewSource(1)))
+	res := ComputeResults(optionIDs, ballots, 0, TiebreakConfig{Tiebreaker: TiebreakMostBackers}, rand.New(rand.NewSource(1)))
 	if len(res.Scores) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(res.Scores))
 	}
@@ -272,7 +272,7 @@ func TestComputeResults_EliminatedOptionCannotWinDespitePopularity(t *testing.T)
 		"p5": {"b": 3},
 		"p6": {"b": 3},
 	}
-	res := ComputeResults(optionIDs, ballots, 6, TiebreakMostBackers, rand.New(rand.NewSource(1)))
+	res := ComputeResults(optionIDs, ballots, 6, TiebreakConfig{Tiebreaker: TiebreakMostBackers}, rand.New(rand.NewSource(1)))
 	a := scoreOf(t, res, "a")
 	b := scoreOf(t, res, "b")
 	if a.Score != 4 || a.Backers != 4 {
@@ -289,5 +289,150 @@ func TestComputeResults_EliminatedOptionCannotWinDespitePopularity(t *testing.T)
 	}
 	if res.WinnerID != "b" {
 		t.Errorf("WinnerID = %q, want %q (eliminated option must not win despite more backers)", res.WinnerID, "b")
+	}
+}
+
+func TestComputeResults_VetoEliminatesRegardlessOfScore(t *testing.T) {
+	// "a" is vetoed by one participant but still gets a healthy score from
+	// others; it must be eliminated (and lose) anyway. "b" has a lower raw
+	// score but no veto, so it wins.
+	optionIDs := []string{"a", "b"}
+	ballots := map[string]map[string]int{
+		"p1": {"a": -1},
+		"p2": {"a": 5},
+		"p3": {"b": 2},
+	}
+	res := ComputeResults(optionIDs, ballots, 0, TiebreakConfig{Tiebreaker: TiebreakMostBackers}, rand.New(rand.NewSource(1)))
+	a := scoreOf(t, res, "a")
+	if a.VetoCount != 1 {
+		t.Errorf("a.VetoCount = %d, want 1", a.VetoCount)
+	}
+	if a.Score != 5 {
+		t.Errorf("a.Score = %d, want 5 (other voter's positive votes still count)", a.Score)
+	}
+	if !a.Eliminated {
+		t.Errorf("a.Eliminated = false, want true (any veto is fatal)")
+	}
+	if res.WinnerID != "b" {
+		t.Errorf("WinnerID = %q, want %q (vetoed option must never win)", res.WinnerID, "b")
+	}
+}
+
+func TestComputeResults_VetoCountZeroWhenNoVetoes(t *testing.T) {
+	optionIDs := []string{"a"}
+	ballots := map[string]map[string]int{"p1": {"a": 3}}
+	res := ComputeResults(optionIDs, ballots, 0, TiebreakConfig{Tiebreaker: TiebreakMostBackers}, rand.New(rand.NewSource(1)))
+	if got := scoreOf(t, res, "a").VetoCount; got != 0 {
+		t.Errorf("VetoCount = %d, want 0", got)
+	}
+}
+
+func TestComputeResults_EarliestTiebreak(t *testing.T) {
+	// a, b, c tied at score 3; "a" was suggested first (creation order) and
+	// must win.
+	optionIDs := []string{"a", "b", "c"}
+	ballots := map[string]map[string]int{
+		"p1": {"a": 3},
+		"p2": {"b": 3},
+		"p3": {"c": 3},
+	}
+	res := ComputeResults(optionIDs, ballots, 0, TiebreakConfig{Tiebreaker: TiebreakEarliest}, rand.New(rand.NewSource(1)))
+	if res.WinnerID != "a" {
+		t.Errorf("WinnerID = %q, want %q (earliest suggested)", res.WinnerID, "a")
+	}
+	if res.TiebreakNote != "tie broken by earliest suggestion" {
+		t.Errorf("TiebreakNote = %q, want %q", res.TiebreakNote, "tie broken by earliest suggestion")
+	}
+}
+
+func TestComputeResults_RunoffPendingOnFreshTie(t *testing.T) {
+	optionIDs := []string{"a", "b", "c"}
+	ballots := map[string]map[string]int{
+		"p1": {"a": 3},
+		"p2": {"b": 3},
+		"p3": {"c": 1},
+	}
+	cfg := TiebreakConfig{Tiebreaker: TiebreakRunoff, RunoffFallback: TiebreakRandom, InRunoff: false}
+	res := ComputeResults(optionIDs, ballots, 0, cfg, rand.New(rand.NewSource(1)))
+	if !res.RunoffPending {
+		t.Errorf("RunoffPending = false, want true")
+	}
+	if res.WinnerID != "" {
+		t.Errorf("WinnerID = %q, want empty while a runoff is pending", res.WinnerID)
+	}
+	if res.TiePending {
+		t.Errorf("TiePending = true, want false (runoffPending is a distinct state)")
+	}
+	want := []string{"a", "b"}
+	got := append([]string{}, res.TiedOptionIDs...)
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("TiedOptionIDs = %v, want %v", res.TiedOptionIDs, want)
+	}
+}
+
+func TestComputeResults_RunoffNoTieIsUnaffected(t *testing.T) {
+	// A clear winner under tiebreaker "runoff" must not trigger a runoff.
+	optionIDs := []string{"a", "b"}
+	ballots := map[string]map[string]int{"p1": {"a": 5, "b": 1}}
+	cfg := TiebreakConfig{Tiebreaker: TiebreakRunoff, RunoffFallback: TiebreakRandom}
+	res := ComputeResults(optionIDs, ballots, 0, cfg, rand.New(rand.NewSource(1)))
+	if res.RunoffPending {
+		t.Errorf("RunoffPending = true, want false (no tie)")
+	}
+	if res.WinnerID != "a" {
+		t.Errorf("WinnerID = %q, want %q", res.WinnerID, "a")
+	}
+}
+
+func TestComputeResults_RunoffFallbackWhenTiedAgain(t *testing.T) {
+	// InRunoff true simulates scoring the runoff round itself: a tie here
+	// must resolve immediately via runoffFallback instead of pending again.
+	optionIDs := []string{"a", "b"}
+	ballots := map[string]map[string]int{
+		"p1": {"a": 3},
+		"p2": {"b": 3},
+	}
+	cfg := TiebreakConfig{Tiebreaker: TiebreakRunoff, RunoffFallback: TiebreakEarliest, InRunoff: true}
+	res := ComputeResults(optionIDs, ballots, 0, cfg, rand.New(rand.NewSource(1)))
+	if res.RunoffPending {
+		t.Errorf("RunoffPending = true, want false (already in a runoff)")
+	}
+	if res.WinnerID != "a" {
+		t.Errorf("WinnerID = %q, want %q (earliest fallback)", res.WinnerID, "a")
+	}
+	if res.TiebreakNote != "tie broken after runoff by earliest suggestion" {
+		t.Errorf("TiebreakNote = %q, want distinguishable runoff-fallback note, got %q", res.TiebreakNote, res.TiebreakNote)
+	}
+}
+
+func TestComputeResults_RunoffFallbackToCreatorStillPending(t *testing.T) {
+	optionIDs := []string{"a", "b"}
+	ballots := map[string]map[string]int{
+		"p1": {"a": 3},
+		"p2": {"b": 3},
+	}
+	cfg := TiebreakConfig{Tiebreaker: TiebreakRunoff, RunoffFallback: TiebreakCreator, InRunoff: true}
+	res := ComputeResults(optionIDs, ballots, 0, cfg, rand.New(rand.NewSource(1)))
+	if res.RunoffPending {
+		t.Errorf("RunoffPending = true, want false (creator fallback uses TiePending, not runoffPending)")
+	}
+	if !res.TiePending {
+		t.Errorf("TiePending = false, want true (creator fallback flow)")
+	}
+	if res.WinnerID != "" {
+		t.Errorf("WinnerID = %q, want empty while tie is pending", res.WinnerID)
+	}
+	want := []string{"a", "b"}
+	got := append([]string{}, res.TiedOptionIDs...)
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("TiedOptionIDs = %v, want %v", res.TiedOptionIDs, want)
+	}
+	if res.TiebreakNote == "" {
+		t.Errorf("expected a non-empty TiebreakNote")
+	}
+	if !res.AfterRunoff {
+		t.Errorf("AfterRunoff = false, want true (tie pended after an automatic runoff round)")
 	}
 }

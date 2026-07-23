@@ -43,6 +43,8 @@ func (s *Server) advancePhase(slug string, byCreator bool, tiebreakWinner string
 	if err := json.Unmarshal([]byte(v.Settings), &settings); err != nil {
 		return fmt.Errorf("decode settings: %w", err)
 	}
+	// Legacy-decode normalization (F4/F5): see parseSettings/BuildRoomState.
+	settings = settings.Normalized()
 
 	switch domain.Phase(v.Phase) {
 	case domain.PhaseSuggesting:
@@ -56,6 +58,10 @@ func (s *Server) advancePhase(slug string, byCreator bool, tiebreakWinner string
 		v.Phase = string(domain.PhaseVoting)
 		v.Results = nil
 		v.PhaseDeadline = nil
+		// Every option is back in play leaving suggesting, even if a
+		// previous round of this same vote somehow left active_options set
+		// (defensive; normally nil already at this point).
+		v.ActiveOptions = nil
 		if settings.VoteTimerSecs > 0 {
 			d := time.Now().Add(time.Duration(settings.VoteTimerSecs) * time.Second).Unix()
 			v.PhaseDeadline = &d
@@ -92,7 +98,14 @@ func (s *Server) advancePhase(slug string, byCreator bool, tiebreakWinner string
 		}
 		res.WinnerID = tiebreakWinner
 		res.TiePending = false
-		res.TiebreakNote = "tie broken by the creator"
+		// F5: distinguish a tie resolved after an automatic runoff round tied
+		// again (runoffFallback "creator") from a plain creator tiebreak, per
+		// the spec's UI requirement (domain.Results.AfterRunoff).
+		if res.AfterRunoff {
+			res.TiebreakNote = "tie broken after runoff by the creator"
+		} else {
+			res.TiebreakNote = "tie broken by the creator"
+		}
 		buf, err := json.Marshal(res)
 		if err != nil {
 			return err
@@ -106,8 +119,13 @@ func (s *Server) advancePhase(slug string, byCreator bool, tiebreakWinner string
 	}
 }
 
-// enterResults scores the current ballots and stores the results, moving the
-// vote into the results phase and clearing any deadline.
+// enterResults scores the current ballots — restricted to the active option
+// set when a runoff round is already in progress (F5) — and stores the
+// results, moving the vote into the results phase and clearing any deadline.
+// If tiebreaker "runoff" hits a fresh (not-already-in-runoff) multi-way tie,
+// ComputeResults reports RunoffPending instead of a winner/TiePending; in
+// that case this starts an automatic runoff round (enterRunoff) rather than
+// entering results at all.
 func (s *Server) enterResults(v store.VoteRow, settings domain.Settings) error {
 	opts, err := s.store.Options(v.Slug)
 	if err != nil {
@@ -117,11 +135,23 @@ func (s *Server) enterResults(v store.VoteRow, settings domain.Settings) error {
 	if err != nil {
 		return err
 	}
-	optionIDs := make([]string, 0, len(opts))
-	for _, o := range opts {
-		optionIDs = append(optionIDs, o.ID)
+	active, err := decodeActiveOptions(v)
+	if err != nil {
+		return err
 	}
-	res := domain.ComputeResults(optionIDs, ballots, settings.SurvivalThreshold, settings.Tiebreaker, newSeededRand())
+	optionIDs := activeOptionIDs(opts, active)
+
+	tb := domain.TiebreakConfig{
+		Tiebreaker:     settings.Tiebreaker,
+		RunoffFallback: settings.RunoffFallback,
+		InRunoff:       v.ActiveOptions != nil,
+	}
+	res := domain.ComputeResults(optionIDs, ballots, settings.SurvivalThreshold, tb, newSeededRand())
+
+	if res.RunoffPending {
+		return s.enterRunoff(v, settings, res.TiedOptionIDs)
+	}
+
 	buf, err := json.Marshal(res)
 	if err != nil {
 		return err
@@ -134,6 +164,35 @@ func (s *Server) enterResults(v store.VoteRow, settings domain.Settings) error {
 		return err
 	}
 	s.armOrClear(v.Slug, nil)
+	return nil
+}
+
+// enterRunoff starts an automatic runoff round (F5) restricted to tiedIDs:
+// all ballots are cleared, the vote stays in the voting phase with only
+// tiedIDs active, and the vote timer is re-armed if configured. The caller
+// (advancePhase's PhaseVoting case) is reached only from the voting phase, so
+// the phase itself does not need to change.
+func (s *Server) enterRunoff(v store.VoteRow, settings domain.Settings, tiedIDs []string) error {
+	if err := s.store.DeleteBallots(v.Slug); err != nil {
+		return err
+	}
+	buf, err := json.Marshal(tiedIDs)
+	if err != nil {
+		return err
+	}
+	active := string(buf)
+	v.ActiveOptions = &active
+	v.Phase = string(domain.PhaseVoting)
+	v.Results = nil
+	v.PhaseDeadline = nil
+	if settings.VoteTimerSecs > 0 {
+		d := time.Now().Add(time.Duration(settings.VoteTimerSecs) * time.Second).Unix()
+		v.PhaseDeadline = &d
+	}
+	if err := s.store.UpdateVote(v); err != nil {
+		return err
+	}
+	s.armOrClear(v.Slug, v.PhaseDeadline)
 	return nil
 }
 
