@@ -7,14 +7,14 @@ import (
 
 // Confusable-free alphabet: excludes I, O, l (and similar) to avoid
 // ambiguous share-link characters.
-var slugPattern = regexp.MustCompile(`^[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789]{6}$`)
+var slugPattern = regexp.MustCompile(`^[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789]{10}$`)
 
 func TestNewSlug(t *testing.T) {
 	seen := make(map[string]bool, 1000)
 	for i := 0; i < 1000; i++ {
 		s := NewSlug()
-		if len(s) != 6 {
-			t.Fatalf("expected slug length 6, got %d (%q)", len(s), s)
+		if len(s) != 10 {
+			t.Fatalf("expected slug length 10, got %d (%q)", len(s), s)
 		}
 		if !slugPattern.MatchString(s) {
 			t.Fatalf("slug %q contains characters outside the confusable-free alphabet", s)

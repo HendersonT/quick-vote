@@ -16,17 +16,21 @@ import (
 const (
 	wsWriteWait  = 10 * time.Second
 	wsPingPeriod = 30 * time.Second
+	// wsPongWait must exceed wsPingPeriod: each pong extends the read
+	// deadline, so a half-open connection is reaped within one missed ping.
+	wsPongWait   = 70 * time.Second
 	wsSendBuffer = 8
 )
 
-var wsUpgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	// The room state is not sensitive across origins in a way that matters
-	// for this self-hosted app, and the frontend is served from the same
-	// origin as the API in production; allow all origins so local dev
-	// (Vite on a different port, proxying /api) keeps working too.
-	CheckOrigin: func(r *http.Request) bool { return true },
+// upgrader builds the WebSocket upgrader. Origins are checked (same-origin
+// plus Config.AllowedOrigins) so another site can't open live connections
+// from its visitors' browsers.
+func (s *Server) upgrader() *websocket.Upgrader {
+	return &websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     s.checkOrigin,
+	}
 }
 
 // wsConn is a single upgraded WebSocket connection registered with the hub.
@@ -43,6 +47,7 @@ type wsConn struct {
 	send      chan []byte
 	slug      string
 	token     string // session token presented on connect; "" for spectators
+	ip        string // client IP, for the per-IP connection cap
 	done      chan struct{}
 	closeOnce sync.Once
 }
@@ -58,10 +63,42 @@ func (c *wsConn) close() {
 type hub struct {
 	mu    sync.Mutex
 	rooms map[string]map[*wsConn]struct{}
+	perIP map[string]int
 }
 
 func newHub() *hub {
-	return &hub{rooms: make(map[string]map[*wsConn]struct{})}
+	return &hub{
+		rooms: make(map[string]map[*wsConn]struct{}),
+		perIP: make(map[string]int),
+	}
+}
+
+// reserve claims a connection slot for (slug, ip), reporting false if either
+// cap is already reached. A successful reserve must be paired with add (on
+// upgrade success) or release (on failure).
+func (h *hub) reserve(slug, ip string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.rooms[slug]) >= maxWSPerVote || h.perIP[ip] >= maxWSPerIP {
+		return false
+	}
+	h.perIP[ip]++
+	return true
+}
+
+// release returns a per-IP slot claimed by reserve.
+func (h *hub) release(ip string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.releaseLocked(ip)
+}
+
+func (h *hub) releaseLocked(ip string) {
+	if h.perIP[ip] <= 1 {
+		delete(h.perIP, ip)
+	} else {
+		h.perIP[ip]--
+	}
 }
 
 func (h *hub) add(c *wsConn) {
@@ -75,6 +112,7 @@ func (h *hub) add(c *wsConn) {
 	conns[c] = struct{}{}
 }
 
+// remove unregisters c and frees its per-IP slot. Idempotent.
 func (h *hub) remove(c *wsConn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -82,7 +120,11 @@ func (h *hub) remove(c *wsConn) {
 	if !ok {
 		return
 	}
+	if _, ok := conns[c]; !ok {
+		return
+	}
 	delete(conns, c)
+	h.releaseLocked(c.ip)
 	if len(conns) == 0 {
 		delete(h.rooms, c.slug)
 	}
@@ -119,9 +161,16 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	token := r.URL.Query().Get("token")
 
-	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	ip := s.clientIP(r)
+	if !s.hub.reserve(slug, ip) {
+		writeError(w, http.StatusTooManyRequests, "too many live connections")
+		return
+	}
+
+	conn, err := s.upgrader().Upgrade(w, r, nil)
 	if err != nil {
 		// Upgrade already wrote an error response.
+		s.hub.release(ip)
 		return
 	}
 
@@ -130,6 +179,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		send:  make(chan []byte, wsSendBuffer),
 		slug:  slug,
 		token: token,
+		ip:    ip,
 		done:  make(chan struct{}),
 	}
 	s.hub.add(c)
@@ -150,6 +200,10 @@ func (s *Server) wsReadPump(c *wsConn) {
 		c.conn.Close()
 	}()
 	c.conn.SetReadLimit(4096)
+	_ = c.conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	c.conn.SetPongHandler(func(string) error {
+		return c.conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	})
 	for {
 		if _, _, err := c.conn.ReadMessage(); err != nil {
 			return

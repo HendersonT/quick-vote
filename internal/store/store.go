@@ -521,3 +521,57 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
+
+// DeleteVotesCreatedBefore permanently removes every vote created before
+// cutoff (unix seconds), along with its participants, options and ballots,
+// and returns the deleted slugs. Used for data-retention pruning.
+func (s *Store) DeleteVotesCreatedBefore(cutoff int64) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin prune: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT slug FROM votes WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("list expired votes: %w", err)
+	}
+	var slugs []string
+	for rows.Next() {
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan expired vote: %w", err)
+		}
+		slugs = append(slugs, slug)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("list expired votes: %w", err)
+	}
+	rows.Close()
+	if len(slugs) == 0 {
+		return nil, nil
+	}
+
+	// Children first: foreign keys are enforced and declared without
+	// ON DELETE CASCADE.
+	sub := `SELECT slug FROM votes WHERE created_at < ?`
+	for _, q := range []string{
+		`DELETE FROM ballots WHERE vote_slug IN (` + sub + `)`,
+		`DELETE FROM options WHERE vote_slug IN (` + sub + `)`,
+		`DELETE FROM participants WHERE vote_slug IN (` + sub + `)`,
+		`DELETE FROM votes WHERE created_at < ?`,
+	} {
+		if _, err := tx.Exec(q, cutoff); err != nil {
+			return nil, fmt.Errorf("prune votes: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit prune: %w", err)
+	}
+	return slugs, nil
+}

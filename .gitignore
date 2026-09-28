@@ -3,3 +3,9 @@ web/dist
 webembed/dist/*
 !webembed/dist/index.html
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
+data/
+.env
+.env.*

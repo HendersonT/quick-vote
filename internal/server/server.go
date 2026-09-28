@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -32,6 +33,18 @@ func maxBytes(n int64) func(http.Handler) http.Handler {
 	}
 }
 
+// Config holds deployment-specific options. The zero value is a safe default
+// for a server exposed directly (no trusted proxy, same-origin WebSockets).
+type Config struct {
+	// TrustedIPHeader names a header set by a trusted reverse proxy carrying
+	// the real client IP (e.g. "CF-Connecting-IP", "X-Forwarded-For"). Leave
+	// empty unless the server is reachable only through that proxy.
+	TrustedIPHeader string
+	// AllowedOrigins lists extra origins (scheme://host[:port]) permitted to
+	// open WebSockets, beyond the page's own origin.
+	AllowedOrigins []string
+}
+
 // Server wires the chi router to a Store and (optionally) a static asset
 // filesystem for the built SPA. It implements http.Handler.
 type Server struct {
@@ -41,6 +54,14 @@ type Server struct {
 	scheduler *Scheduler
 	onChange  func(slug string)
 	hub       *hub
+	cfg       Config
+
+	// writeLimit throttles every mutating request per client IP; createLimit
+	// and createGlobal additionally throttle vote creation, the one endpoint
+	// that needs no existing link.
+	writeLimit   *rateLimiter
+	createLimit  *rateLimiter
+	createGlobal *rateLimiter
 
 	// slugMu guards slugLocks; each per-slug mutex serializes phase-affecting
 	// mutations for one vote so read-modify-write transitions (ballot +
@@ -66,10 +87,25 @@ func (s *Server) lockSlug(slug string) func() {
 	return mu.Unlock
 }
 
-// New builds a Server. staticFS may be nil (e.g. in tests) in which case no
-// static/SPA routes are registered — only /api.
+// New builds a Server with the default Config. staticFS may be nil (e.g. in
+// tests) in which case no static/SPA routes are registered — only /api.
 func New(st *store.Store, staticFS fs.FS) *Server {
-	s := &Server{store: st, static: staticFS, hub: newHub(), slugLocks: map[string]*sync.Mutex{}}
+	return NewWithConfig(st, staticFS, Config{})
+}
+
+// NewWithConfig builds a Server with explicit deployment options.
+func NewWithConfig(st *store.Store, staticFS fs.FS, cfg Config) *Server {
+	s := &Server{
+		store:     st,
+		static:    staticFS,
+		hub:       newHub(),
+		cfg:       cfg,
+		slugLocks: map[string]*sync.Mutex{},
+		// Generous enough for a whole party behind one NAT'd IP.
+		writeLimit:   newRateLimiter(120, 500*time.Millisecond),
+		createLimit:  newRateLimiter(10, time.Minute),
+		createGlobal: newRateLimiter(100, 10*time.Second),
+	}
 	s.scheduler = NewScheduler(func(slug string) { s.timerFired(slug) })
 	s.router = s.routes()
 	s.onChange = s.broadcast
@@ -98,19 +134,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
+	r.Use(securityHeaders)
+
+	// write = body cap + per-IP throttle, applied to every mutating route.
+	write := chi.Chain(maxBytes(maxRequestBody), s.limit(s.writeLimit, nil))
 
 	r.Route("/api/votes", func(r chi.Router) {
-		r.With(maxBytes(maxRequestBody)).Post("/", s.handleCreateVote)
+		r.With(write...).With(s.limit(s.createLimit, s.createGlobal)).Post("/", s.handleCreateVote)
 		r.Route("/{slug}", func(r chi.Router) {
 			r.Get("/", s.handleGetVote)
-			r.With(maxBytes(maxRequestBody)).Post("/join", s.handleJoin)
-			r.With(maxBytes(maxRequestBody)).Post("/suggestions", s.handleCreateSuggestion)
-			r.Delete("/suggestions/{id}", s.handleDeleteSuggestion)
-			r.With(maxBytes(maxRequestBody)).Post("/done-suggesting", s.handleDoneSuggesting)
-			r.With(maxBytes(maxRequestBody)).Put("/ballot", s.handlePutBallot)
-			r.With(maxBytes(maxRequestBody)).Post("/advance", s.handleAdvance)
-			r.With(maxBytes(maxRequestBody)).Post("/revote", s.handleRevote)
-			r.Get("/ws", s.handleWS)
+			r.With(write...).Post("/join", s.handleJoin)
+			r.With(write...).Post("/suggestions", s.handleCreateSuggestion)
+			r.With(write...).Delete("/suggestions/{id}", s.handleDeleteSuggestion)
+			r.With(write...).Post("/done-suggesting", s.handleDoneSuggesting)
+			r.With(write...).Put("/ballot", s.handlePutBallot)
+			r.With(write...).Post("/advance", s.handleAdvance)
+			r.With(write...).Post("/revote", s.handleRevote)
+			r.With(s.limit(s.writeLimit, nil)).Get("/ws", s.handleWS)
 		})
 	})
 

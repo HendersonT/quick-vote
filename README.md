@@ -52,8 +52,9 @@ Three phases move in order: **suggesting → voting → results**.
 Phase changes and every other update are pushed live over a WebSocket, so all
 open browsers stay in sync.
 
-Data is kept indefinitely in SQLite — nothing is pruned or expired. A vote's
-room stays reachable at its `/v/<slug>` link forever, and each browser also
+Votes are stored in SQLite and deleted automatically 90 days after creation
+(configurable with `QV_RETENTION_DAYS`; `0` keeps them forever). Until then a
+vote's room stays reachable at its `/v/<slug>` link, and each browser also
 keeps a local "recent votes" list (in `localStorage`, not synced anywhere) so
 you can find your way back to rooms you created or joined without keeping the
 link.
@@ -84,16 +85,18 @@ controls. Settings cannot be changed after a vote is created.
 
 ## Development
 
-Backend (Go 1.23+):
+Backend (Go 1.23+; the Docker build uses 1.27):
 
 ```sh
 go run ./cmd/quickvote -addr :8080 -db ./quickvote.db
 ```
 
-Frontend (Node 22), with a dev server that proxies `/api` (including the
-WebSocket) to the Go backend on `:8080`:
+Frontend (Node 22+), with a dev server that proxies `/api` (including the
+WebSocket) to the Go backend on `:8080`. WebSockets are same-origin only, so
+start the backend with the dev server's origin allowed:
 
 ```sh
+QV_ALLOWED_ORIGINS=http://localhost:5173 go run ./cmd/quickvote -db ./quickvote.db
 cd web
 npm install
 npm run dev
@@ -114,16 +117,35 @@ Flags (with environment-variable fallbacks):
 |---|---|---|---|
 | `-addr` | `QV_ADDR` | `:8080` | Listen address. |
 | `-db` | `QV_DB` | `/data/quickvote.db` | SQLite database file path (its directory is created if missing). |
+| `-retention-days` | `QV_RETENTION_DAYS` | `90` | Delete votes this many days after creation (checked at startup and daily). `0` disables. |
+| `-trusted-ip-header` | `QV_TRUSTED_IP_HEADER` | *(none)* | Header carrying the real client IP from your reverse proxy (`CF-Connecting-IP`, `X-Forwarded-For`, `X-Real-IP`). Rate limits are per client IP, so set this behind a proxy — but **only** if the server can't be reached except through that proxy, or clients can spoof it. |
+| `-allowed-origins` | `QV_ALLOWED_ORIGINS` | *(none)* | Comma-separated extra origins allowed to open WebSockets (the page's own origin is always allowed). |
+
+### Abuse limits
+
+Quick Vote has no accounts, so it protects a public deployment with fixed
+limits sized so a group sharing one IP (same Wi-Fi) won't hit them:
+
+- Vote creation: 10 per IP (refilling 1/minute), plus a global cap.
+- Other writes (join, suggest, vote, …): 120-request burst per IP, refilling 2/second.
+- Participants: 100 per vote.
+- Live-update WebSockets: 200 per vote, 50 per IP.
+- Request bodies: 64 KiB. HTTP read/write timeouts guard against slow clients.
+
+Responses carry a strict Content-Security-Policy, `X-Frame-Options: DENY`, and
+`Referrer-Policy: no-referrer` (room links are the only access control, so
+they must not leak via `Referer`).
 
 ### Rebuilding the embedded frontend
 
-The Go binary serves the SPA from `webembed/dist` via `//go:embed`. A minimal
-placeholder `index.html` is committed so `go build` works from a fresh clone. To
+The Go binary serves the SPA from `webembed/dist` via `//go:embed`. A
+placeholder `index.html` is committed so `go build` works from a fresh clone
+(the API works; the page just says the UI wasn't built). To
 embed the real UI when building outside Docker:
 
 ```sh
 cd web && npm run build
-cp -r dist ../webembed/dist
+cp -r dist/. ../webembed/dist/
 go build ./cmd/quickvote
 ```
 
@@ -147,6 +169,10 @@ location / {
 
 Caddy and Traefik proxy WebSockets correctly with no extra configuration.
 
+Behind any proxy, also set `QV_TRUSTED_IP_HEADER` (e.g. `X-Real-IP` with
+`proxy_set_header X-Real-IP $remote_addr;` in nginx, or `CF-Connecting-IP` for
+a Cloudflare Tunnel) so rate limits apply per client rather than to the proxy.
+
 ## License
 
-Provided as-is for self-hosting.
+[MIT](LICENSE).

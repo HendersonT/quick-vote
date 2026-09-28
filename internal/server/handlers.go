@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -228,6 +229,8 @@ type joinResponse struct {
 // any phase.
 func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
+	// Serialize joins per room so the participant cap below can't be raced.
+	defer s.lockSlug(slug)()
 	v, err := s.store.GetVote(slug)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -256,6 +259,10 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	existing, err := s.store.Participants(slug)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if len(existing) >= maxParticipantsPerVote {
+		writeError(w, http.StatusConflict, "this vote is full")
 		return
 	}
 	name = dedupeName(name, existing)
@@ -624,7 +631,7 @@ func (s *Server) handleAdvance(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if r.Header.Get("X-Creator-Token") != v.CreatorToken {
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Creator-Token")), []byte(v.CreatorToken)) != 1 {
 		writeError(w, http.StatusForbidden, "creator token required")
 		return
 	}

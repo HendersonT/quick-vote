@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # --- Stage 1: build the React SPA -------------------------------------------
-FROM node:22-alpine AS web
+FROM node:24-alpine AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
@@ -9,7 +9,7 @@ COPY web/ ./
 RUN npm run build
 
 # --- Stage 2: build the static Go binary ------------------------------------
-FROM golang:1.23-alpine AS build
+FROM golang:1.27-alpine AS build
 WORKDIR /src
 # Cache module downloads first.
 COPY go.mod go.sum ./
@@ -25,7 +25,7 @@ RUN go test ./...
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /quickvote ./cmd/quickvote
 
 # --- Stage 3: minimal runtime image -----------------------------------------
-FROM alpine:3.20
+FROM alpine:3.24
 RUN adduser -D -u 10001 quickvote
 COPY --from=build /quickvote /quickvote
 RUN mkdir -p /data && chown quickvote:quickvote /data

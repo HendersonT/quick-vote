@@ -9,7 +9,7 @@ import (
 const slugAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
 
 func NewSlug() string {
-	b := make([]byte, 6)
+	b := make([]byte, 10)
 	for i := range b {
 		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(slugAlphabet))))
 		if err != nil {
