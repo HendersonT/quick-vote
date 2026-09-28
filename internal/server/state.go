@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/quickvote/quickvote/internal/domain"
-	"github.com/quickvote/quickvote/internal/store"
+	"github.com/HendersonT/quick-vote/internal/domain"
+	"github.com/HendersonT/quick-vote/internal/store"
 )
 
 // BuildRoomState assembles the normative room-state snapshot (see the plan's

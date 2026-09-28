@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/quickvote/quickvote/internal/server"
-	"github.com/quickvote/quickvote/internal/store"
+	"github.com/HendersonT/quick-vote/internal/server"
+	"github.com/HendersonT/quick-vote/internal/store"
 )
 
 func newTestServer(t *testing.T) *server.Server {

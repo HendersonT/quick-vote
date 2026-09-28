@@ -10,7 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 
-	"github.com/quickvote/quickvote/internal/store"
+	"github.com/HendersonT/quick-vote/internal/store"
 )
 
 const (

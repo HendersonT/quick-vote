@@ -12,9 +12,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/quickvote/quickvote/internal/domain"
-	"github.com/quickvote/quickvote/internal/ids"
-	"github.com/quickvote/quickvote/internal/store"
+	"github.com/HendersonT/quick-vote/internal/domain"
+	"github.com/HendersonT/quick-vote/internal/ids"
+	"github.com/HendersonT/quick-vote/internal/store"
 )
 
 type errorResponse struct {

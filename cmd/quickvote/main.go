@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/quickvote/quickvote/internal/server"
-	"github.com/quickvote/quickvote/internal/store"
-	"github.com/quickvote/quickvote/webembed"
+	"github.com/HendersonT/quick-vote/internal/server"
+	"github.com/HendersonT/quick-vote/internal/store"
+	"github.com/HendersonT/quick-vote/webembed"
 )
 
 func main() {

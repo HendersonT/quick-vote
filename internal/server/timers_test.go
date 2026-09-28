@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quickvote/quickvote/internal/server"
-	"github.com/quickvote/quickvote/internal/store"
+	"github.com/HendersonT/quick-vote/internal/server"
+	"github.com/HendersonT/quick-vote/internal/store"
 )
 
 // TestRearmTimersFiresPastDueDeadline drives a vote into the voting phase with

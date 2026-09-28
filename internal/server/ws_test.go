@@ -13,8 +13,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/quickvote/quickvote/internal/server"
-	"github.com/quickvote/quickvote/internal/store"
+	"github.com/HendersonT/quick-vote/internal/server"
+	"github.com/HendersonT/quick-vote/internal/store"
 )
 
 // newWSTestServer builds a server backed by a real httptest.Server, since

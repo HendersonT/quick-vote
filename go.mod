@@ -1,4 +1,4 @@
-module github.com/quickvote/quickvote
+module github.com/HendersonT/quick-vote
 
 go 1.23
 

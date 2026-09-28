@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quickvote/quickvote/internal/server"
+	"github.com/HendersonT/quick-vote/internal/server"
 )
 
 // doHdr issues a request like doJSON but also sets an optional
