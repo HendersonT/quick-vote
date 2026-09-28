@@ -50,7 +50,7 @@ func DefaultSettings() Settings {
 		CreditsPerOption:      3,
 		SuggestAdvanceMode:    "manual",
 		VoteAdvanceMode:       "all-voted",
-		SurvivalThreshold:     1,
+		SurvivalThreshold:     0,
 		Tiebreaker:            TiebreakMostBackers,
 		RevoteThresholdPct:    33,
 		VetoCost:              0,

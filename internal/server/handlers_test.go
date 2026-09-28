@@ -97,7 +97,7 @@ func TestCreateVoteDefaults(t *testing.T) {
 		"creditsPerOption":      float64(3),
 		"suggestAdvanceMode":    "manual",
 		"voteAdvanceMode":       "all-voted",
-		"survivalThreshold":     float64(1),
+		"survivalThreshold":     float64(0),
 		"tiebreaker":            "most-backers",
 		"revoteThresholdPct":    float64(33),
 	}

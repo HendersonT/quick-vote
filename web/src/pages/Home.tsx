@@ -16,7 +16,7 @@ const DEFAULTS = {
   suggestAdvanceMode: "manual" as SuggestAdvanceMode,
   suggestAdvanceCount: 2,
   voteAdvanceMode: "all-voted" as VoteAdvanceMode,
-  survivalThreshold: 1,
+  survivalThreshold: 0,
   tiebreaker: "most-backers" as Tiebreaker,
   revoteThresholdPct: 33,
   vetoCost: 0,
