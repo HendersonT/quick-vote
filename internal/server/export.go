@@ -59,14 +59,22 @@ func (s *Server) handleResultsCSV(w http.ResponseWriter, r *http.Request) {
 	cw := csv.NewWriter(w)
 	_ = cw.Write([]string{"rank", "option", "score", "backers", "vetoes", "eliminated", "winner"})
 	for i, sc := range res.Scores {
+		title, ok := titles[sc.OptionID]
+		if !ok {
+			// Options aren't deleted once scored, but if one ever were,
+			// its ID still identifies the row better than a blank cell.
+			title = sc.OptionID
+		}
 		_ = cw.Write([]string{
 			strconv.Itoa(i + 1),
-			csvSafe(titles[sc.OptionID]),
+			csvSafe(title),
 			strconv.Itoa(sc.Score),
 			strconv.Itoa(sc.Backers),
 			strconv.Itoa(sc.VetoCount),
 			yesNo(sc.Eliminated),
-			// A pending tie has no winner yet even though WinnerID may be set.
+			// WinnerID is empty while a creator tiebreak is pending; the
+			// TiePending check is a guard so a pending tie can never be
+			// exported with a winner even if that changes.
 			yesNo(sc.OptionID == res.WinnerID && !res.TiePending),
 		})
 	}
