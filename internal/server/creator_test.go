@@ -1,9 +1,17 @@
 package server_test
 
 import (
+	"database/sql"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
+
+	"github.com/HendersonT/quick-vote/internal/clock"
+	"github.com/HendersonT/quick-vote/internal/server"
+	"github.com/HendersonT/quick-vote/internal/store"
 )
 
 func TestRemoveParticipantWipesAndInvalidates(t *testing.T) {
@@ -450,5 +458,97 @@ func TestNextVoteValidationAndClosed(t *testing.T) {
 	doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/close", nil, aliceTok, ct)
 	if rec, _ := doHdr(t, s, http.MethodPost, path, map[string]any{"title": "x"}, aliceTok, ct); rec.Code != http.StatusConflict {
 		t.Fatalf("next on closed vote: %d, want 409", rec.Code)
+	}
+}
+
+// TestNextVoteAfterSuccessorPruned: when a follow-up vote is pruned while its
+// source is still in use, the source drops the link, so the group sees no
+// dead "next" and the creator can start another follow-up.
+func TestNextVoteAfterSuccessorPruned(t *testing.T) {
+	s, fc := newFakeClockServer(t)
+	slug, ct, aliceTok, _ := createVote(t, s, nil)
+	bobTok := join(t, s, slug, "Bob")
+	rec, out := doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/next", map[string]any{"title": "R2"}, aliceTok, ct)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("next: %d %s", rec.Code, rec.Body.String())
+	}
+	first := out["slug"].(string)
+
+	fc.Advance(100 * 24 * time.Hour)
+	suggest(t, s, slug, aliceTok, "still here") // activity on the source only
+	if n, err := s.PruneExpired(90 * 24 * time.Hour); err != nil || n != 1 {
+		t.Fatalf("pruned n=%d err=%v, want 1 (the successor)", n, err)
+	}
+	if rec, _ := doJSON(t, s, http.MethodGet, "/api/votes/"+first, nil, ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("successor survived prune: %d", rec.Code)
+	}
+	st := getState(t, s, slug, bobTok)
+	if st["next"] != nil {
+		t.Fatalf("source still advertises a pruned successor: %v", st["next"])
+	}
+	if _, ok := st["you"].(map[string]any)["nextSessionToken"]; ok {
+		t.Fatal("handoff token for a pruned successor must not be sent")
+	}
+
+	rec, out = doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/next", map[string]any{"title": "R3"}, aliceTok, ct)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("next after successor pruned: %d %s", rec.Code, rec.Body.String())
+	}
+	second := out["slug"].(string)
+	st = getState(t, s, slug, bobTok)
+	if next, _ := st["next"].(map[string]any); next == nil || next["slug"] != second || next["title"] != "R3" {
+		t.Fatalf("source next = %v, want %s/R3", st["next"], second)
+	}
+	bobNew, _ := st["you"].(map[string]any)["nextSessionToken"].(string)
+	if got := getState(t, s, second, bobNew); got["you"] == nil {
+		t.Fatal("Bob's new handoff token doesn't authenticate in the new successor")
+	}
+}
+
+// TestNextVoteOverDanglingLink covers a source whose next_slug points at a
+// row that is gone without having been unlinked (a database pruned by an
+// earlier build): the room must show no successor or handoff tokens (the
+// hasNext guard in BuildRoomState), and starting a new follow-up must work.
+func TestNextVoteOverDanglingLink(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	s := server.NewWithConfig(st, nil, server.Config{Clock: clock.NewFake(time.Unix(1_700_000_000, 0))})
+
+	slug, ct, aliceTok, _ := createVote(t, s, nil)
+	bobTok := join(t, s, slug, "Bob")
+	_, out := doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/next", map[string]any{"title": "R2"}, aliceTok, ct)
+	first := out["slug"].(string)
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	for _, q := range []string{`DELETE FROM participants WHERE vote_slug = ?`, `DELETE FROM votes WHERE slug = ?`} {
+		if _, err := raw.Exec(q, first); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, who := range []struct{ tok, ct string }{{bobTok, ""}, {aliceTok, ct}} {
+		_, got := doHdr(t, s, http.MethodGet, "/api/votes/"+slug, nil, who.tok, who.ct)
+		you := got["you"].(map[string]any)
+		_, hasSession := you["nextSessionToken"]
+		_, hasCreator := you["nextCreatorToken"]
+		if got["next"] != nil || hasSession || hasCreator {
+			t.Fatalf("dangling successor leaked: next=%v you=%v", got["next"], you)
+		}
+	}
+
+	rec, out := doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/next", map[string]any{"title": "R3"}, aliceTok, ct)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("next over a dangling link: %d %s", rec.Code, rec.Body.String())
+	}
+	if next, _ := getState(t, s, slug, bobTok)["next"].(map[string]any); next == nil || next["slug"] != out["slug"] {
+		t.Fatalf("source next = %v, want %v", next, out["slug"])
 	}
 }

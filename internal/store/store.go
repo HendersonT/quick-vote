@@ -142,6 +142,13 @@ type VoteRow struct {
 	NextTitle *string
 }
 
+// HasNext reports whether v links to a successor that still exists. A
+// next_slug whose row is gone (NextTitle nil) counts as no successor: pruning
+// unlinks it, but a database pruned by an older build may still dangle.
+func (v VoteRow) HasNext() bool {
+	return v.NextSlug != nil && v.NextTitle != nil
+}
+
 // ParticipantRow mirrors the participants table.
 type ParticipantRow struct {
 	ID          string
@@ -360,8 +367,8 @@ func (s *Store) UpdateVote(v VoteRow) error {
 // it from srcSlug: sets votes.next_slug and next_creator_token on the source
 // and participants.next_token for each carried-over source participant.
 // carried maps source participant ID -> new participant row. Returns
-// ErrConflict if the source already has a successor, ErrNotFound if the
-// source vote does not exist.
+// ErrConflict if the source already has a successor that still exists,
+// ErrNotFound if the source vote does not exist.
 //
 // One transaction, so a crash can't leave a successor the old room never
 // links to, or a link to participants that were never created.
@@ -375,8 +382,12 @@ func (s *Store) CreateNextVote(srcSlug string, next VoteRow, carried map[string]
 	}
 	defer tx.Rollback()
 
+	// Only a successor that still exists counts (see VoteRow.HasNext); a
+	// dangling link is replaced below.
 	var existing *string
-	if err := tx.QueryRow(`SELECT next_slug FROM votes WHERE slug = ?`, srcSlug).Scan(&existing); err != nil {
+	if err := tx.QueryRow(
+		`SELECT n.slug FROM votes v LEFT JOIN votes n ON n.slug = v.next_slug WHERE v.slug = ?`, srcSlug,
+	).Scan(&existing); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -384,6 +395,11 @@ func (s *Store) CreateNextVote(srcSlug string, next VoteRow, carried map[string]
 	}
 	if existing != nil {
 		return ErrConflict
+	}
+	// Drop any handoff tokens left by a dangling link, so only the
+	// participants carried this time get one.
+	if _, err := tx.Exec(`UPDATE participants SET next_token = NULL WHERE vote_slug = ?`, srcSlug); err != nil {
+		return fmt.Errorf("clear stale next tokens: %w", err)
 	}
 
 	if next.LastActivity == 0 {
@@ -840,7 +856,8 @@ func boolToInt(b bool) int {
 // activity is before cutoff (unix seconds), along with its participants,
 // options and ballots, and returns the deleted slugs. Used for
 // data-retention pruning: keyed on activity rather than creation so a vote
-// still in use is never deleted out from under its group.
+// still in use is never deleted out from under its group. Surviving votes
+// that linked to a deleted successor are unlinked in the same transaction.
 func (s *Store) DeleteVotesInactiveSince(cutoff int64) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -873,10 +890,16 @@ func (s *Store) DeleteVotesInactiveSince(cutoff int64) ([]string, error) {
 		return nil, nil
 	}
 
-	// Children first: foreign keys are enforced and declared without
-	// ON DELETE CASCADE.
 	sub := `SELECT slug FROM votes WHERE last_activity < ?`
 	for _, q := range []string{
+		// A surviving vote whose successor is being pruned drops the link
+		// and its participants' handoff tokens, so it never points the
+		// group at a vote that is gone and can start another follow-up.
+		`UPDATE participants SET next_token = NULL
+		 WHERE vote_slug IN (SELECT slug FROM votes WHERE next_slug IN (` + sub + `))`,
+		`UPDATE votes SET next_slug = NULL, next_creator_token = NULL WHERE next_slug IN (` + sub + `)`,
+		// Children first: foreign keys are enforced and declared without
+		// ON DELETE CASCADE.
 		`DELETE FROM ballots WHERE vote_slug IN (` + sub + `)`,
 		`DELETE FROM options WHERE vote_slug IN (` + sub + `)`,
 		`DELETE FROM participants WHERE vote_slug IN (` + sub + `)`,

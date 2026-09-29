@@ -998,3 +998,90 @@ func TestCreateNextVoteLinksAndCarries(t *testing.T) {
 		t.Fatalf("missing source: %v, want ErrNotFound", err)
 	}
 }
+
+// seedSourceWithSuccessor creates vote "src" (Alice creator, Bob) and its
+// successor "nxt" carrying both, as CreateNextVote does.
+func seedSourceWithSuccessor(t *testing.T, st *Store) {
+	t.Helper()
+	if err := st.CreateVote(VoteRow{Slug: "src", Title: "Src", Phase: "results", Settings: "{}", CreatorToken: "ct", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []ParticipantRow{
+		{ID: "p1", VoteSlug: "src", Name: "Alice", Token: "tok1", IsCreator: true, JoinedAt: 1},
+		{ID: "p2", VoteSlug: "src", Name: "Bob", Token: "tok2", JoinedAt: 2},
+	} {
+		if err := st.AddParticipant(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next := VoteRow{Slug: "nxt", Title: "Round two", Phase: "suggesting", Settings: "{}", CreatorToken: "ct2", CreatedAt: 5}
+	if err := st.CreateNextVote("src", next, map[string]ParticipantRow{
+		"p1": {ID: "n1", VoteSlug: "nxt", Name: "Alice", Token: "ntok1", IsCreator: true, JoinedAt: 5},
+		"p2": {ID: "n2", VoteSlug: "nxt", Name: "Bob", Token: "ntok2", JoinedAt: 5},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPruneUnlinksPrunedSuccessor: pruning a successor whose source is still
+// active must drop the source's link and its participants' handoff tokens,
+// or the source would point at a vote that no longer exists and could never
+// start another.
+func TestPruneUnlinksPrunedSuccessor(t *testing.T) {
+	st := openTestStore(t)
+	seedSourceWithSuccessor(t, st)
+	if err := st.TouchVote("src", 900); err != nil {
+		t.Fatal(err)
+	}
+	gone, err := st.DeleteVotesInactiveSince(500)
+	if err != nil || len(gone) != 1 || gone[0] != "nxt" {
+		t.Fatalf("pruned %v err=%v, want [nxt]", gone, err)
+	}
+	src, err := st.GetVote("src")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.NextSlug != nil || src.NextCreatorToken != nil {
+		t.Fatalf("source still linked: next=%v creator=%v", src.NextSlug, src.NextCreatorToken)
+	}
+	parts, err := st.Participants("src")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range parts {
+		if p.NextToken != nil {
+			t.Fatalf("%s kept next token %q for a pruned successor", p.Name, *p.NextToken)
+		}
+	}
+	again := VoteRow{Slug: "nxt2", Title: "Again", Phase: "suggesting", Settings: "{}", CreatorToken: "ct3", CreatedAt: 950}
+	if err := st.CreateNextVote("src", again, map[string]ParticipantRow{}); err != nil {
+		t.Fatalf("new successor after prune: %v", err)
+	}
+}
+
+// TestCreateNextVoteReplacesDanglingLink: a next_slug whose row is gone (e.g.
+// pruned by a build that didn't unlink it) counts as no successor, and the
+// replacement link leaves no stale handoff token behind.
+func TestCreateNextVoteReplacesDanglingLink(t *testing.T) {
+	st := openTestStore(t)
+	seedSourceWithSuccessor(t, st)
+	for _, q := range []string{`DELETE FROM participants WHERE vote_slug = 'nxt'`, `DELETE FROM votes WHERE slug = 'nxt'`} {
+		if _, err := st.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	again := VoteRow{Slug: "nxt2", Title: "Again", Phase: "suggesting", Settings: "{}", CreatorToken: "ct3", CreatedAt: 6}
+	carried := map[string]ParticipantRow{
+		"p1": {ID: "m1", VoteSlug: "nxt2", Name: "Alice", Token: "mtok1", IsCreator: true, JoinedAt: 6},
+	}
+	if err := st.CreateNextVote("src", again, carried); err != nil {
+		t.Fatalf("CreateNextVote over a dangling link: %v", err)
+	}
+	src, err := st.GetVote("src")
+	if err != nil || src.NextSlug == nil || *src.NextSlug != "nxt2" || src.NextTitle == nil {
+		t.Fatalf("source link = %v (title %v), err=%v, want nxt2", src.NextSlug, src.NextTitle, err)
+	}
+	if bob, err := st.ParticipantByToken("src", "tok2"); err != nil || bob.NextToken != nil {
+		t.Fatalf("Bob wasn't carried this time but kept next token %v (err=%v)", bob.NextToken, err)
+	}
+}

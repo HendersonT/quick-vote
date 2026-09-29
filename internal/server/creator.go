@@ -178,7 +178,9 @@ func (s *Server) handleNextVote(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if v.NextSlug != nil {
+	// A link to a successor that no longer exists doesn't count; the new
+	// follow-up replaces it.
+	if v.HasNext() {
 		writeError(w, http.StatusConflict, "this vote already has a follow-up")
 		return
 	}

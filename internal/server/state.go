@@ -71,9 +71,9 @@ func BuildRoomState(v store.VoteRow, parts []store.ParticipantRow, opts []store.
 		phaseDeadline = time.Unix(*v.PhaseDeadline, 0).UTC().Format(time.RFC3339)
 	}
 
-	// A successor whose row is gone (pruned) has no title; treat it as no
-	// successor rather than send clients to a 404.
-	hasNext := v.NextSlug != nil && v.NextTitle != nil
+	// A successor whose row is gone has no title; treat it as no successor
+	// rather than send clients to a 404.
+	hasNext := v.HasNext()
 
 	var you any
 	if requester != nil {
