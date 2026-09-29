@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -591,4 +592,225 @@ func TestMigrateAddsColumnsToExistingDB(t *testing.T) {
 		t.Fatalf("second Open on already-migrated db: %v", err)
 	}
 	defer st2.Close()
+}
+
+func TestMigrationAddsPublishRoundColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	// Pre-round schema: the July tables without the new columns.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+CREATE TABLE votes (slug TEXT PRIMARY KEY, title TEXT NOT NULL, phase TEXT NOT NULL DEFAULT 'suggesting',
+  settings TEXT NOT NULL, creator_token TEXT NOT NULL, phase_deadline INTEGER, results TEXT,
+  created_at INTEGER NOT NULL, active_options TEXT);
+CREATE TABLE participants (id TEXT PRIMARY KEY, vote_slug TEXT NOT NULL REFERENCES votes(slug),
+  name TEXT NOT NULL, token TEXT NOT NULL UNIQUE, is_creator INTEGER NOT NULL DEFAULT 0,
+  wants_revote INTEGER NOT NULL DEFAULT 0, joined_at INTEGER NOT NULL, done_suggesting INTEGER NOT NULL DEFAULT 0);
+INSERT INTO votes (slug,title,settings,creator_token,created_at) VALUES ('old','T','{}','ct',500);
+INSERT INTO participants (id,vote_slug,name,token,joined_at) VALUES ('p1','old','A','tok',500);`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open migrated: %v", err)
+	}
+	defer st.Close()
+	v, err := st.GetVote("old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.LastActivity != 500 {
+		t.Fatalf("last_activity backfill = %d, want created_at 500", v.LastActivity)
+	}
+	if v.ClosedAt != nil || v.NextSlug != nil || v.NextCreatorToken != nil {
+		t.Fatalf("new nullable columns should be nil: %+v", v)
+	}
+	ps, err := st.Participants("old")
+	if err != nil || len(ps) != 1 || ps[0].NextToken != nil {
+		t.Fatalf("participants after migration: %+v err=%v", ps, err)
+	}
+}
+
+func TestCreateVoteDefaultsLastActivity(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.CreateVote(VoteRow{Slug: "a", Title: "A", Phase: "suggesting", Settings: "{}", CreatorToken: "c", CreatedAt: 42}); err != nil {
+		t.Fatal(err)
+	}
+	v, err := st.GetVote("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.LastActivity != 42 {
+		t.Fatalf("LastActivity = %d, want CreatedAt 42", v.LastActivity)
+	}
+}
+
+func TestUpdateVotePublishRoundFields(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.CreateVote(VoteRow{Slug: "a", Title: "A", Phase: "suggesting", Settings: "{}", CreatorToken: "c", CreatedAt: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.TouchVote("a", 100); err != nil {
+		t.Fatal(err)
+	}
+	v, err := st.GetVote("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := int64(90)
+	next, nct := "b", "nct"
+	v.ClosedAt, v.NextSlug, v.NextCreatorToken = &closed, &next, &nct
+	v.LastActivity = 50 // stale in-memory copy must not roll activity back
+	if err := st.UpdateVote(v); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetVote("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClosedAt == nil || *got.ClosedAt != 90 || got.NextSlug == nil || *got.NextSlug != "b" ||
+		got.NextCreatorToken == nil || *got.NextCreatorToken != "nct" {
+		t.Fatalf("fields not persisted: %+v", got)
+	}
+	if got.LastActivity != 100 {
+		t.Fatalf("LastActivity = %d, want 100 (not regressed)", got.LastActivity)
+	}
+	got.ClosedAt = nil
+	if err := st.UpdateVote(got); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := st.GetVote("a"); again.ClosedAt != nil {
+		t.Fatalf("ClosedAt not cleared: %v", *again.ClosedAt)
+	}
+}
+
+func TestRemovedParticipantsExcluded(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.CreateVote(VoteRow{Slug: "a", Title: "A", Phase: "suggesting", Settings: "{}", CreatorToken: "c", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []ParticipantRow{
+		{ID: "p1", VoteSlug: "a", Name: "A", Token: "t1", JoinedAt: 1},
+		{ID: "p2", VoteSlug: "a", Name: "B", Token: "t2", JoinedAt: 2},
+	} {
+		if err := st.AddParticipant(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.db.Exec(`UPDATE participants SET removed_at = 5, next_token = 'nt' WHERE id = 'p2'`); err != nil {
+		t.Fatal(err)
+	}
+	ps, err := st.Participants("a")
+	if err != nil || len(ps) != 1 || ps[0].ID != "p1" {
+		t.Fatalf("Participants = %+v err=%v, want only p1", ps, err)
+	}
+	if _, err := st.ParticipantByToken("a", "t2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("removed participant resolved by token: err=%v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE participants SET next_token = 'nt1' WHERE id = 'p1'`); err != nil {
+		t.Fatal(err)
+	}
+	p, err := st.ParticipantByToken("a", "t1")
+	if err != nil || p.NextToken == nil || *p.NextToken != "nt1" {
+		t.Fatalf("NextToken not read: %+v err=%v", p, err)
+	}
+}
+
+func TestTouchAndPruneByLastActivity(t *testing.T) {
+	st := openTestStore(t)
+	mk := func(slug string, created int64) {
+		if err := st.CreateVote(VoteRow{Slug: slug, Title: slug, Phase: "suggesting", Settings: "{}", CreatorToken: "c" + slug, CreatedAt: created}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("stale", 100)
+	mk("busy", 100)
+	if err := st.TouchVote("busy", 900); err != nil {
+		t.Fatal(err)
+	}
+	gone, err := st.DeleteVotesInactiveSince(500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gone) != 1 || gone[0] != "stale" {
+		t.Fatalf("pruned %v, want [stale]", gone)
+	}
+	if _, err := st.GetVote("busy"); err != nil {
+		t.Fatalf("recently active vote was pruned: %v", err)
+	}
+	if _, err := st.GetVote("stale"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("stale vote survived: %v", err)
+	}
+}
+
+func TestTouchVoteUnknownSlug(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.TouchVote("nope", 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("TouchVote unknown = %v, want ErrNotFound", err)
+	}
+}
+
+func TestCheckpointEmptiesWAL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cp.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.CreateVote(VoteRow{Slug: "w", Title: "W", Phase: "suggesting", Settings: "{}", CreatorToken: "c", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(path + "-wal"); err != nil || fi.Size() == 0 {
+		t.Fatalf("expected a non-empty -wal before checkpoint (err=%v)", err)
+	}
+	if err := st.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(path + "-wal"); err == nil && fi.Size() != 0 {
+		t.Fatalf("-wal is %d bytes after Checkpoint, want empty", fi.Size())
+	}
+}
+
+func TestCloseCheckpointsWAL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateVote(VoteRow{Slug: "w", Title: "W", Phase: "suggesting", Settings: "{}", CreatorToken: "c", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(path + "-wal"); err == nil && fi.Size() != 0 {
+		t.Fatalf("-wal is %d bytes after Close, want empty/absent", fi.Size())
+	}
+	// The main file alone must hold the data.
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM votes`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("rows in main file = %d err=%v, want 1", n, err)
+	}
+}
+
+func TestQueryCountCountsReads(t *testing.T) {
+	st := openTestStore(t)
+	before := st.QueryCount()
+	_, _ = st.GetVote("nope")
+	_, _ = st.Participants("nope")
+	_, _ = st.ParticipantByToken("nope", "t")
+	_, _ = st.Options("nope")
+	_, _ = st.Ballots("nope")
+	if got := st.QueryCount() - before; got != 5 {
+		t.Fatalf("QueryCount delta = %d, want 5", got)
+	}
 }

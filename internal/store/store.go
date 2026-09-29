@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -21,13 +22,15 @@ CREATE TABLE IF NOT EXISTS votes (
   phase TEXT NOT NULL DEFAULT 'suggesting',
   settings TEXT NOT NULL, creator_token TEXT NOT NULL,
   phase_deadline INTEGER, results TEXT, created_at INTEGER NOT NULL,
-  active_options TEXT);
+  active_options TEXT, last_activity INTEGER, closed_at INTEGER,
+  next_slug TEXT, next_creator_token TEXT);
 CREATE TABLE IF NOT EXISTS participants (
   id TEXT PRIMARY KEY, vote_slug TEXT NOT NULL REFERENCES votes(slug),
   name TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
   is_creator INTEGER NOT NULL DEFAULT 0,
   wants_revote INTEGER NOT NULL DEFAULT 0, joined_at INTEGER NOT NULL,
-  done_suggesting INTEGER NOT NULL DEFAULT 0);
+  done_suggesting INTEGER NOT NULL DEFAULT 0,
+  removed_at INTEGER, next_token TEXT);
 CREATE TABLE IF NOT EXISTS options (
   id TEXT PRIMARY KEY, vote_slug TEXT NOT NULL REFERENCES votes(slug),
   participant_id TEXT NOT NULL REFERENCES participants(id),
@@ -49,6 +52,12 @@ var migrationColumns = []struct {
 }{
 	{"participants", "done_suggesting", "ALTER TABLE participants ADD COLUMN done_suggesting INTEGER NOT NULL DEFAULT 0"},
 	{"votes", "active_options", "ALTER TABLE votes ADD COLUMN active_options TEXT"},
+	{"votes", "last_activity", "ALTER TABLE votes ADD COLUMN last_activity INTEGER"},
+	{"votes", "closed_at", "ALTER TABLE votes ADD COLUMN closed_at INTEGER"},
+	{"votes", "next_slug", "ALTER TABLE votes ADD COLUMN next_slug TEXT"},
+	{"votes", "next_creator_token", "ALTER TABLE votes ADD COLUMN next_creator_token TEXT"},
+	{"participants", "removed_at", "ALTER TABLE participants ADD COLUMN removed_at INTEGER"},
+	{"participants", "next_token", "ALTER TABLE participants ADD COLUMN next_token TEXT"},
 }
 
 // migrate adds any columns from migrationColumns missing on tables that
@@ -86,6 +95,12 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("add column %s.%s: %w", m.table, m.column, err)
 		}
 	}
+	// Votes that predate last-activity tracking count as last active when
+	// they were created, so retention treats them exactly as it did before
+	// (created_at-based) until something touches them.
+	if _, err := db.Exec(`UPDATE votes SET last_activity = created_at WHERE last_activity IS NULL`); err != nil {
+		return fmt.Errorf("backfill last_activity: %w", err)
+	}
 	return nil
 }
 
@@ -103,6 +118,16 @@ type VoteRow struct {
 	// to those options (used during a runoff round). nil means all options
 	// are active.
 	ActiveOptions *string
+	// LastActivity (unix seconds) is when the vote last changed; retention
+	// prunes by it so a long-running but active vote is never deleted.
+	LastActivity int64
+	// ClosedAt is set while the creator has closed the vote; nil means open.
+	ClosedAt *int64
+	// NextSlug is the successor vote started "with this group", if any.
+	NextSlug *string
+	// NextCreatorToken is the successor's creator token, kept so it can be
+	// handed only to this vote's creator.
+	NextCreatorToken *string
 }
 
 // ParticipantRow mirrors the participants table.
@@ -118,6 +143,9 @@ type ParticipantRow struct {
 	// suggesting" flag, toggled explicitly and independent of how many
 	// suggestions (if any) they've made.
 	DoneSuggesting bool
+	// NextToken is this participant's session token in the successor vote,
+	// sent only to them so they can follow the group without re-joining.
+	NextToken *string
 }
 
 // OptionRow mirrors the options table.
@@ -134,6 +162,16 @@ type OptionRow struct {
 type Store struct {
 	db *sql.DB
 	mu sync.Mutex
+	// queries counts room-data reads (see QueryCount).
+	queries atomic.Int64
+}
+
+// QueryCount returns how many room-data reads (GetVote, Participants,
+// ParticipantByToken, Options, Ballots) this store has issued. It exists so
+// tests can assert that broadcast fan-out loads room data once rather than
+// once per connection; it has no production use.
+func (s *Store) QueryCount() int64 {
+	return s.queries.Load()
 }
 
 // Open opens (creating if necessary) the SQLite database at path and
@@ -165,20 +203,63 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// Close closes the underlying database connection.
+// Close checkpoints the WAL and closes the underlying database connection.
+// The checkpoint's error is ignored: closing must still happen, and SQLite
+// also checkpoints on last-connection close when it can.
 func (s *Store) Close() error {
+	_ = s.Checkpoint()
 	return s.db.Close()
 }
 
-// CreateVote inserts a new vote row.
+// Checkpoint copies the WAL into the main database file and truncates the
+// WAL. SQLite only auto-checkpoints once the WAL reaches 1000 pages, so a
+// small, quiet database can otherwise keep all recent data in -wal
+// indefinitely, where a copy of the main file alone (a naive backup) misses it.
+func (s *Store) Checkpoint() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return fmt.Errorf("wal checkpoint: %w", err)
+	}
+	return nil
+}
+
+// TouchVote records activity on a vote at unix time at, which postpones its
+// retention pruning. Returns ErrNotFound if the vote does not exist.
+func (s *Store) TouchVote(slug string, at int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	res, err := s.db.Exec(`UPDATE votes SET last_activity = ? WHERE slug = ?`, at, slug)
+	if err != nil {
+		return fmt.Errorf("touch vote: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("touch vote rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// CreateVote inserts a new vote row. A zero LastActivity defaults to
+// CreatedAt: a brand-new vote was last active when it was created.
 func (s *Store) CreateVote(v VoteRow) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if v.LastActivity == 0 {
+		v.LastActivity = v.CreatedAt
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO votes (slug, title, phase, settings, creator_token, phase_deadline, results, created_at, active_options)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO votes (slug, title, phase, settings, creator_token, phase_deadline, results, created_at, active_options,
+		   last_activity, closed_at, next_slug, next_creator_token)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		v.Slug, v.Title, v.Phase, v.Settings, v.CreatorToken, v.PhaseDeadline, v.Results, v.CreatedAt, v.ActiveOptions,
+		v.LastActivity, v.ClosedAt, v.NextSlug, v.NextCreatorToken,
 	)
 	if err != nil {
 		return fmt.Errorf("create vote: %w", err)
@@ -188,16 +269,19 @@ func (s *Store) CreateVote(v VoteRow) error {
 
 // GetVote fetches a vote by slug. Returns ErrNotFound if it does not exist.
 func (s *Store) GetVote(slug string) (VoteRow, error) {
+	s.queries.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	row := s.db.QueryRow(
-		`SELECT slug, title, phase, settings, creator_token, phase_deadline, results, created_at, active_options
+		`SELECT slug, title, phase, settings, creator_token, phase_deadline, results, created_at, active_options,
+		   COALESCE(last_activity, created_at), closed_at, next_slug, next_creator_token
 		 FROM votes WHERE slug = ?`, slug,
 	)
 	var v VoteRow
 	if err := row.Scan(&v.Slug, &v.Title, &v.Phase, &v.Settings, &v.CreatorToken,
-		&v.PhaseDeadline, &v.Results, &v.CreatedAt, &v.ActiveOptions); err != nil {
+		&v.PhaseDeadline, &v.Results, &v.CreatedAt, &v.ActiveOptions,
+		&v.LastActivity, &v.ClosedAt, &v.NextSlug, &v.NextCreatorToken); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return VoteRow{}, ErrNotFound
 		}
@@ -207,14 +291,21 @@ func (s *Store) GetVote(slug string) (VoteRow, error) {
 }
 
 // UpdateVote updates the mutable fields of a vote: phase, deadline, results,
-// active_options.
+// active_options, closed_at, next_slug, next_creator_token and
+// last_activity. last_activity only ever moves forward: a handler holding a
+// VoteRow loaded before a TouchVote must not roll the activity time back and
+// make a live vote look prunable.
 func (s *Store) UpdateVote(v VoteRow) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	res, err := s.db.Exec(
-		`UPDATE votes SET phase = ?, phase_deadline = ?, results = ?, active_options = ? WHERE slug = ?`,
-		v.Phase, v.PhaseDeadline, v.Results, v.ActiveOptions, v.Slug,
+		`UPDATE votes SET phase = ?, phase_deadline = ?, results = ?, active_options = ?,
+		   closed_at = ?, next_slug = ?, next_creator_token = ?,
+		   last_activity = MAX(COALESCE(last_activity, created_at), ?)
+		 WHERE slug = ?`,
+		v.Phase, v.PhaseDeadline, v.Results, v.ActiveOptions,
+		v.ClosedAt, v.NextSlug, v.NextCreatorToken, v.LastActivity, v.Slug,
 	)
 	if err != nil {
 		return fmt.Errorf("update vote: %w", err)
@@ -275,14 +366,17 @@ func (s *Store) AddParticipant(p ParticipantRow) error {
 	return nil
 }
 
-// Participants returns all participants of a vote in joined order.
+// Participants returns the current (non-removed) participants of a vote in
+// joined order. Removed participants are soft-deleted so their options and
+// ballots keep valid foreign keys, but they no longer count for anything.
 func (s *Store) Participants(slug string) ([]ParticipantRow, error) {
+	s.queries.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	rows, err := s.db.Query(
-		`SELECT id, vote_slug, name, token, is_creator, wants_revote, joined_at, done_suggesting
-		 FROM participants WHERE vote_slug = ? ORDER BY joined_at ASC, rowid ASC`, slug,
+		`SELECT id, vote_slug, name, token, is_creator, wants_revote, joined_at, done_suggesting, next_token
+		 FROM participants WHERE vote_slug = ? AND removed_at IS NULL ORDER BY joined_at ASC, rowid ASC`, slug,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list participants: %w", err)
@@ -293,7 +387,7 @@ func (s *Store) Participants(slug string) ([]ParticipantRow, error) {
 	for rows.Next() {
 		var p ParticipantRow
 		var isCreator, wantsRevote, doneSuggesting int
-		if err := rows.Scan(&p.ID, &p.VoteSlug, &p.Name, &p.Token, &isCreator, &wantsRevote, &p.JoinedAt, &doneSuggesting); err != nil {
+		if err := rows.Scan(&p.ID, &p.VoteSlug, &p.Name, &p.Token, &isCreator, &wantsRevote, &p.JoinedAt, &doneSuggesting, &p.NextToken); err != nil {
 			return nil, fmt.Errorf("scan participant: %w", err)
 		}
 		p.IsCreator = isCreator != 0
@@ -307,18 +401,20 @@ func (s *Store) Participants(slug string) ([]ParticipantRow, error) {
 	return out, nil
 }
 
-// ParticipantByToken looks up a participant of a vote by their session token.
+// ParticipantByToken looks up a current (non-removed) participant of a vote
+// by their session token; a removed participant's token no longer resolves.
 func (s *Store) ParticipantByToken(slug, token string) (ParticipantRow, error) {
+	s.queries.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	row := s.db.QueryRow(
-		`SELECT id, vote_slug, name, token, is_creator, wants_revote, joined_at, done_suggesting
-		 FROM participants WHERE vote_slug = ? AND token = ?`, slug, token,
+		`SELECT id, vote_slug, name, token, is_creator, wants_revote, joined_at, done_suggesting, next_token
+		 FROM participants WHERE vote_slug = ? AND token = ? AND removed_at IS NULL`, slug, token,
 	)
 	var p ParticipantRow
 	var isCreator, wantsRevote, doneSuggesting int
-	if err := row.Scan(&p.ID, &p.VoteSlug, &p.Name, &p.Token, &isCreator, &wantsRevote, &p.JoinedAt, &doneSuggesting); err != nil {
+	if err := row.Scan(&p.ID, &p.VoteSlug, &p.Name, &p.Token, &isCreator, &wantsRevote, &p.JoinedAt, &doneSuggesting, &p.NextToken); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ParticipantRow{}, ErrNotFound
 		}
@@ -426,6 +522,7 @@ func (s *Store) DeleteOption(slug, optionID, participantID string) error {
 
 // Options returns all options of a vote in creation order.
 func (s *Store) Options(slug string) ([]OptionRow, error) {
+	s.queries.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -474,6 +571,7 @@ func (s *Store) PutBallot(slug, participantID, votesJSON string) error {
 // Ballots returns all ballots of a vote, decoded from JSON, keyed by
 // participant ID then option ID.
 func (s *Store) Ballots(slug string) (map[string]map[string]int, error) {
+	s.queries.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -522,10 +620,12 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-// DeleteVotesCreatedBefore permanently removes every vote created before
-// cutoff (unix seconds), along with its participants, options and ballots,
-// and returns the deleted slugs. Used for data-retention pruning.
-func (s *Store) DeleteVotesCreatedBefore(cutoff int64) ([]string, error) {
+// DeleteVotesInactiveSince permanently removes every vote whose last
+// activity is before cutoff (unix seconds), along with its participants,
+// options and ballots, and returns the deleted slugs. Used for
+// data-retention pruning: keyed on activity rather than creation so a vote
+// still in use is never deleted out from under its group.
+func (s *Store) DeleteVotesInactiveSince(cutoff int64) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -535,7 +635,7 @@ func (s *Store) DeleteVotesCreatedBefore(cutoff int64) ([]string, error) {
 	}
 	defer tx.Rollback()
 
-	rows, err := tx.Query(`SELECT slug FROM votes WHERE created_at < ?`, cutoff)
+	rows, err := tx.Query(`SELECT slug FROM votes WHERE last_activity < ?`, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("list expired votes: %w", err)
 	}
@@ -559,12 +659,12 @@ func (s *Store) DeleteVotesCreatedBefore(cutoff int64) ([]string, error) {
 
 	// Children first: foreign keys are enforced and declared without
 	// ON DELETE CASCADE.
-	sub := `SELECT slug FROM votes WHERE created_at < ?`
+	sub := `SELECT slug FROM votes WHERE last_activity < ?`
 	for _, q := range []string{
 		`DELETE FROM ballots WHERE vote_slug IN (` + sub + `)`,
 		`DELETE FROM options WHERE vote_slug IN (` + sub + `)`,
 		`DELETE FROM participants WHERE vote_slug IN (` + sub + `)`,
-		`DELETE FROM votes WHERE created_at < ?`,
+		`DELETE FROM votes WHERE last_activity < ?`,
 	} {
 		if _, err := tx.Exec(q, cutoff); err != nil {
 			return nil, fmt.Errorf("prune votes: %w", err)
