@@ -186,6 +186,7 @@ func (s *Server) routes() chi.Router {
 		r.With(write...).With(s.limit(s.createLimit, s.createGlobal)).Post("/", s.handleCreateVote)
 		r.Route("/{slug}", func(r chi.Router) {
 			r.Get("/", s.handleGetVote)
+			r.Get("/results.csv", s.handleResultsCSV)
 			r.With(write...).Post("/join", s.handleJoin)
 			r.With(write...).Post("/suggestions", s.handleCreateSuggestion)
 			r.With(write...).Delete("/suggestions/{id}", s.handleDeleteSuggestion)
