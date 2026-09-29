@@ -9,10 +9,18 @@ import (
 // its in-memory state (armed timers, per-room locks, live connections).
 // Returns how many votes were removed.
 func (s *Server) PruneExpired(retention time.Duration) (int, error) {
-	slugs, err := s.store.DeleteVotesInactiveSince(s.now().Add(-retention).Unix())
+	slugs, unlinked, err := s.store.DeleteVotesInactiveSince(s.now().Add(-retention).Unix())
 	if err != nil {
 		return 0, err
 	}
+	// Sources that just lost their (pruned) successor: refresh their live
+	// sockets so nobody keeps a banner linking to a vote that is gone.
+	// broadcast, not changed — pruning is not activity on the source.
+	defer func() {
+		for _, slug := range unlinked {
+			s.broadcast(slug)
+		}
+	}()
 	for _, slug := range slugs {
 		s.scheduler.Clear(slug)
 		for _, c := range s.hub.connsFor(slug) {

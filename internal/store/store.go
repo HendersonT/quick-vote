@@ -871,40 +871,35 @@ func boolToInt(b bool) int {
 // options and ballots, and returns the deleted slugs. Used for
 // data-retention pruning: keyed on activity rather than creation so a vote
 // still in use is never deleted out from under its group. Surviving votes
-// that linked to a deleted successor are unlinked in the same transaction.
-func (s *Store) DeleteVotesInactiveSince(cutoff int64) ([]string, error) {
+// that linked to a deleted successor are unlinked in the same transaction
+// and returned as unlinked, so the caller can refresh their live rooms.
+func (s *Store) DeleteVotesInactiveSince(cutoff int64) (deleted, unlinked []string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("begin prune: %w", err)
+		return nil, nil, fmt.Errorf("begin prune: %w", err)
 	}
 	defer tx.Rollback()
 
-	rows, err := tx.Query(`SELECT slug FROM votes WHERE last_activity < ?`, cutoff)
+	deleted, err = querySlugs(tx, `SELECT slug FROM votes WHERE last_activity < ?`, cutoff)
 	if err != nil {
-		return nil, fmt.Errorf("list expired votes: %w", err)
+		return nil, nil, fmt.Errorf("list expired votes: %w", err)
 	}
-	var slugs []string
-	for rows.Next() {
-		var slug string
-		if err := rows.Scan(&slug); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("scan expired vote: %w", err)
-		}
-		slugs = append(slugs, slug)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, fmt.Errorf("list expired votes: %w", err)
-	}
-	rows.Close()
-	if len(slugs) == 0 {
-		return nil, nil
+	if len(deleted) == 0 {
+		return nil, nil, nil
 	}
 
 	sub := `SELECT slug FROM votes WHERE last_activity < ?`
+	// Surviving votes whose successor is about to go: listed before the
+	// unlink below so the caller can push them a snapshot without the link.
+	unlinked, err = querySlugs(tx,
+		`SELECT slug FROM votes WHERE last_activity >= ? AND next_slug IN (`+sub+`)`, cutoff, cutoff)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list unlinked sources: %w", err)
+	}
+
 	for _, q := range []string{
 		// A surviving vote whose successor is being pruned drops the link
 		// and its participants' handoff tokens, so it never points the
@@ -919,12 +914,30 @@ func (s *Store) DeleteVotesInactiveSince(cutoff int64) ([]string, error) {
 		`DELETE FROM participants WHERE vote_slug IN (` + sub + `)`,
 		`DELETE FROM votes WHERE last_activity < ?`,
 	} {
-		if _, err := tx.Exec(q, cutoff); err != nil {
-			return nil, fmt.Errorf("prune votes: %w", err)
+		if _, err = tx.Exec(q, cutoff); err != nil {
+			return nil, nil, fmt.Errorf("prune votes: %w", err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit prune: %w", err)
+	if err = tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("commit prune: %w", err)
 	}
-	return slugs, nil
+	return deleted, unlinked, nil
+}
+
+// querySlugs runs a single-column slug query inside tx and collects the rows.
+func querySlugs(tx *sql.Tx, q string, args ...any) ([]string, error) {
+	rows, err := tx.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			return nil, err
+		}
+		out = append(out, slug)
+	}
+	return out, rows.Err()
 }

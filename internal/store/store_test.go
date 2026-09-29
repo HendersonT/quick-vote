@@ -747,9 +747,12 @@ func TestTouchAndPruneByLastActivity(t *testing.T) {
 	if err := st.TouchVote("busy", 900); err != nil {
 		t.Fatal(err)
 	}
-	gone, err := st.DeleteVotesInactiveSince(500)
+	gone, unlinked, err := st.DeleteVotesInactiveSince(500)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(unlinked) != 0 {
+		t.Fatalf("unlinked %v, want none", unlinked)
 	}
 	if len(gone) != 1 || gone[0] != "stale" {
 		t.Fatalf("pruned %v, want [stale]", gone)
@@ -1034,9 +1037,14 @@ func TestPruneUnlinksPrunedSuccessor(t *testing.T) {
 	if err := st.TouchVote("src", 900); err != nil {
 		t.Fatal(err)
 	}
-	gone, err := st.DeleteVotesInactiveSince(500)
+	gone, unlinked, err := st.DeleteVotesInactiveSince(500)
 	if err != nil || len(gone) != 1 || gone[0] != "nxt" {
 		t.Fatalf("pruned %v err=%v, want [nxt]", gone, err)
+	}
+	// The surviving source is reported so the server can push it a fresh
+	// snapshot without the dead link.
+	if len(unlinked) != 1 || unlinked[0] != "src" {
+		t.Fatalf("unlinked %v, want [src]", unlinked)
 	}
 	src, err := st.GetVote("src")
 	if err != nil {

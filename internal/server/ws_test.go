@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/HendersonT/quick-vote/internal/clock"
 	"github.com/HendersonT/quick-vote/internal/server"
 	"github.com/HendersonT/quick-vote/internal/store"
 )
@@ -258,5 +259,39 @@ func TestWebSocketClosedWhenVoteGoneAtAuth(t *testing.T) {
 	_, _, err := conn.ReadMessage()
 	if !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
 		t.Fatalf("want a normal close for a vote that is gone, got %v", err)
+	}
+}
+
+// TestPruneRefreshesUnlinkedSource: pruning a follow-up vote unlinks its
+// still-active source, and sockets open on the source must hear about it —
+// otherwise they keep a "moved on" banner pointing at a vote that is gone.
+func TestPruneRefreshesUnlinkedSource(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	fc := clock.NewFake(time.Unix(1_700_000_000, 0))
+	s := server.NewWithConfig(st, nil, server.Config{Clock: fc, WSAuthTimeout: 200 * time.Millisecond})
+	ts := httptest.NewServer(s)
+	t.Cleanup(ts.Close)
+
+	slug, ct, aliceTok, _ := createVote(t, s, nil)
+	bobTok := join(t, s, slug, "Bob")
+	if rec, _ := doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/next", map[string]any{"title": "R2"}, aliceTok, ct); rec.Code != http.StatusCreated {
+		t.Fatalf("next: %d", rec.Code)
+	}
+	fc.Advance(100 * 24 * time.Hour)
+	suggest(t, s, slug, aliceTok, "still here") // keeps only the source active
+
+	bob := dialWS(t, ts, slug, bobTok)
+	if snap := readSnapshot(t, bob); snap["next"] == nil {
+		t.Fatal("precondition: source should still show its successor")
+	}
+	if n, err := s.PruneExpired(90 * 24 * time.Hour); err != nil || n != 1 {
+		t.Fatalf("pruned n=%d err=%v, want 1", n, err)
+	}
+	if snap := readSnapshot(t, bob); snap["next"] != nil {
+		t.Fatalf("source socket still shows the pruned successor: %v", snap["next"])
 	}
 }
