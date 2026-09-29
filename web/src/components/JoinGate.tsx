@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { joinVote } from "../api";
 import { navigate } from "../App";
 import type { RoomState } from "../types";
+import { checkName, MAX_NAME_CHARS } from "../validation";
 
 interface JoinGateProps {
   slug: string;
@@ -24,15 +25,12 @@ export default function JoinGate({ slug, title, onJoined, notice, next, closed }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    const trimmed = name.trim();
-    if (!trimmed) {
-      setError("Enter your name.");
+    const checked = checkName(name);
+    if (!checked.ok) {
+      setError(checked.error);
       return;
     }
-    if (trimmed.length > 50) {
-      setError("Name must be 50 characters or fewer.");
-      return;
-    }
+    const trimmed = checked.value;
     setError(null);
     setSubmitting(true);
     try {
@@ -71,7 +69,7 @@ export default function JoinGate({ slug, title, onJoined, notice, next, closed }
             id="joinName"
             type="text"
             value={name}
-            maxLength={50}
+            maxLength={MAX_NAME_CHARS}
             placeholder="Sam"
             onChange={(e) => setName(e.target.value)}
             autoFocus

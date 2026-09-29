@@ -7,6 +7,7 @@ import SettingsFields, {
   type SettingsFormState,
 } from "../components/SettingsFields";
 import { addToHistory, getHistory, saveSession, sortHistory } from "../session";
+import { checkName, checkTitle, MAX_NAME_CHARS, MAX_TITLE_CHARS } from "../validation";
 
 /** Relative-ish date for the recent-votes list: "today", "3d ago", or a date. */
 function formatHistoryDate(ts: number): string {
@@ -34,25 +35,18 @@ export default function Home() {
     e.preventDefault();
     setServerError(null);
 
-    const trimmedTitle = title.trim();
-    const trimmedName = creatorName.trim();
-
-    if (!trimmedTitle) {
-      setFieldError("Give the vote a title.");
+    const checkedTitle = checkTitle(title);
+    if (!checkedTitle.ok) {
+      setFieldError(checkedTitle.error);
       return;
     }
-    if (trimmedTitle.length > 200) {
-      setFieldError("Title must be 200 characters or fewer.");
+    const checkedName = checkName(creatorName);
+    if (!checkedName.ok) {
+      setFieldError(checkedName.error);
       return;
     }
-    if (!trimmedName) {
-      setFieldError("Enter your name.");
-      return;
-    }
-    if (trimmedName.length > 50) {
-      setFieldError("Name must be 50 characters or fewer.");
-      return;
-    }
+    const trimmedTitle = checkedTitle.value;
+    const trimmedName = checkedName.value;
     setFieldError(null);
 
     setSubmitting(true);
@@ -91,7 +85,7 @@ export default function Home() {
             id="title"
             type="text"
             value={title}
-            maxLength={200}
+            maxLength={MAX_TITLE_CHARS}
             placeholder="Friday game night"
             onChange={(e) => setTitle(e.target.value)}
             required
@@ -104,7 +98,7 @@ export default function Home() {
             id="creatorName"
             type="text"
             value={creatorName}
-            maxLength={50}
+            maxLength={MAX_NAME_CHARS}
             placeholder="Sam"
             onChange={(e) => setCreatorName(e.target.value)}
             required

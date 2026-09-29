@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { createNextVote } from "../api";
 import { navigate } from "../App";
-import { addToHistory, markMoved, saveSession } from "../session";
+import { markMoved, recordMove, unmarkMoved } from "../session";
 import type { RoomState } from "../types";
+import { checkTitle, MAX_TITLE_CHARS } from "../validation";
 import SettingsFields, { fromSettings, toSettings, type SettingsFormState } from "./SettingsFields";
 
 interface NextVoteFormProps {
@@ -37,36 +38,34 @@ export default function NextVoteForm({
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    const trimmed = title.trim();
-    if (!trimmed) {
-      setError("Give the next vote a title.");
-      return;
-    }
-    if (trimmed.length > 200) {
-      setError("Title must be 200 characters or fewer.");
+    const checked = checkTitle(title);
+    if (!checked.ok) {
+      setError(checked.error);
       return;
     }
     setError(null);
     setSubmitting(true);
+    // Mark the old vote moved before the request, not after: the server
+    // broadcasts the handoff to the old room (this tab's socket included)
+    // before the response arrives, and an unmarked snapshot would make Room
+    // follow on its own and then this handler navigate a second time.
+    markMoved(slug);
     try {
       const res = await createNextVote(
         slug,
         sessionToken,
         creatorToken,
-        trimmed,
+        checked.value,
         toSettings(settings),
       );
-      saveSession(res.slug, {
-        sessionToken: res.sessionToken,
-        creatorToken: res.creatorToken,
-        name,
-      });
-      // The old room's next broadcast will carry the same handoff; marking
-      // it moved now keeps that snapshot from triggering a second move.
-      markMoved(slug);
-      addToHistory(res.slug, trimmed);
+      recordMove(
+        slug,
+        { slug: res.slug, title: checked.value },
+        { sessionToken: res.sessionToken, creatorToken: res.creatorToken, name },
+      );
       navigate(`/v/${res.slug}`);
     } catch (err) {
+      unmarkMoved(slug);
       setError(err instanceof Error ? err.message : "Failed to start the next vote.");
       setSubmitting(false);
     }
@@ -89,7 +88,7 @@ export default function NextVoteForm({
           id="nextTitle"
           type="text"
           value={title}
-          maxLength={200}
+          maxLength={MAX_TITLE_CHARS}
           placeholder="Round two"
           onChange={(e) => setTitle(e.target.value)}
           autoFocus

@@ -108,6 +108,31 @@ export function markMoved(oldSlug: string): void {
 }
 
 /**
+ * Undoes markMoved. The creator's tab marks the old vote moved before asking
+ * the server for the follow-up (see NextVoteForm); if that request fails,
+ * this lets a later handoff snapshot move the tab after all.
+ */
+export function unmarkMoved(oldSlug: string): void {
+  localStorage.removeItem(movedKey(oldSlug));
+}
+
+/**
+ * Saves the follow-up vote's session, marks oldSlug as moved, and records the
+ * follow-up in history — everything a browser does to enter the next vote
+ * except navigating there. Shared by the automatic follow (applyMove) and the
+ * creator's own "start another vote" form.
+ */
+export function recordMove(
+  oldSlug: string,
+  next: { slug: string; title: string },
+  session: Session,
+): void {
+  saveSession(next.slug, session);
+  markMoved(oldSlug);
+  addToHistory(next.slug, next.title);
+}
+
+/**
  * True when this browser should auto-follow the group to `state.next` —
  * only once per old slug, so revisiting an old vote never redirect-loops.
  * Spectators and removed participants (no handoff token) never auto-move.
@@ -129,8 +154,6 @@ export function applyMove(oldSlug: string, state: RoomState, name: string): stri
   const next = state.next!;
   const session: Session = { sessionToken: state.you!.nextSessionToken!, name };
   if (state.you?.nextCreatorToken) session.creatorToken = state.you.nextCreatorToken;
-  saveSession(next.slug, session);
-  markMoved(oldSlug);
-  addToHistory(next.slug, next.title);
+  recordMove(oldSlug, next, session);
   return next.slug;
 }

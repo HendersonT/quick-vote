@@ -4,9 +4,12 @@ import {
   applyMove,
   getHistory,
   getSession,
+  markMoved,
+  recordMove,
   setHistoryClosed,
   shouldAutoMove,
   sortHistory,
+  unmarkMoved,
 } from "./session";
 import type { RoomState } from "./types";
 
@@ -70,6 +73,35 @@ describe("next-vote handoff", () => {
   it("records the successor vote in history", () => {
     applyMove("old", moved(), "Bob");
     expect(getHistory()[0]).toMatchObject({ slug: "new", title: "New" });
+  });
+});
+
+describe("creator starting the next vote", () => {
+  beforeEach(() => vi.stubGlobal("localStorage", memStorage()));
+
+  // The server broadcasts the handoff to the old room, including the
+  // creator's own socket, before the create request resolves; marking the
+  // old vote moved first keeps that snapshot from moving the tab a second time.
+  it("ignores the old room's handoff snapshot once marked moved", () => {
+    markMoved("old");
+    expect(shouldAutoMove("old", moved())).toBe(false);
+  });
+
+  it("re-enables the auto-move when starting the next vote fails", () => {
+    markMoved("old");
+    unmarkMoved("old");
+    expect(shouldAutoMove("old", moved())).toBe(true);
+  });
+
+  it("records the move with the creator's new tokens", () => {
+    recordMove("old", { slug: "new", title: "New" }, {
+      sessionToken: "s2",
+      creatorToken: "c2",
+      name: "Alice",
+    });
+    expect(getSession("new")).toEqual({ sessionToken: "s2", creatorToken: "c2", name: "Alice" });
+    expect(getHistory()[0]).toMatchObject({ slug: "new", title: "New" });
+    expect(shouldAutoMove("old", moved())).toBe(false);
   });
 });
 
