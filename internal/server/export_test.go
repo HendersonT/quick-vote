@@ -55,6 +55,9 @@ func TestResultsCSVNeutralizesFormulas(t *testing.T) {
 	}
 	got := map[string]bool{}
 	for i, r := range rows[1:] {
+		if r[1] == "" {
+			t.Fatalf("row %d has an empty option cell: %v", i+1, r)
+		}
 		if c := r[1][0]; c == '=' || c == '+' || c == '-' || c == '@' {
 			t.Fatalf("formula-leading cell survived: %q", r[1])
 		}

@@ -699,3 +699,53 @@ func TestRemoveRevoteCallerDoesNotTriggerRevote(t *testing.T) {
 		t.Fatalf("phase=%v, want results: the only caller was removed", st["phase"])
 	}
 }
+
+// TestCloseReopenAuthMatrix: close and reopen need the creator's session and
+// the creator token, and a rejected attempt changes nothing.
+func TestCloseReopenAuthMatrix(t *testing.T) {
+	s := newTestServer(t)
+	slug, ct, aliceTok, _ := createVote(t, s, nil)
+	bobTok := join(t, s, slug, "Bob")
+	base := "/api/votes/" + slug
+	rejected := []struct {
+		name, tok, ct string
+		want          int
+	}{
+		{"no session", "", ct, http.StatusUnauthorized},
+		{"creator session, no creator token", aliceTok, "", http.StatusForbidden},
+		{"creator session, wrong creator token", aliceTok, "wrong", http.StatusForbidden},
+		{"non-creator session with the creator token", bobTok, ct, http.StatusForbidden},
+	}
+	for _, action := range []struct {
+		path   string
+		closed bool // state before (and after) every rejected attempt
+	}{{"/close", false}, {"/reopen", true}} {
+		if action.closed {
+			if rec, _ := doHdr(t, s, http.MethodPost, base+"/close", nil, aliceTok, ct); rec.Code != http.StatusOK {
+				t.Fatalf("setup close: %d", rec.Code)
+			}
+		}
+		for _, c := range rejected {
+			if rec, _ := doHdr(t, s, http.MethodPost, base+action.path, nil, c.tok, c.ct); rec.Code != c.want {
+				t.Errorf("%s by %s: %d, want %d", action.path, c.name, rec.Code, c.want)
+			}
+			if got := getState(t, s, slug, "")["closed"]; got != action.closed {
+				t.Fatalf("%s by %s changed closed to %v", action.path, c.name, got)
+			}
+		}
+	}
+}
+
+// TestNextVoteCountsAgainstCreateLimit: a follow-up creates a vote, so it
+// shares the per-IP creation throttle with POST /api/votes.
+func TestNextVoteCountsAgainstCreateLimit(t *testing.T) {
+	s := newTestServer(t)
+	slug, ct, aliceTok, _ := createVote(t, s, nil)
+	for i := 1; i < 10; i++ { // the create limit is a burst of 10
+		createVote(t, s, nil)
+	}
+	rec, _ := doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/next", map[string]any{"title": "R2"}, aliceTok, ct)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("next after exhausting creates: %d, want 429", rec.Code)
+	}
+}

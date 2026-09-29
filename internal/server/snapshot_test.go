@@ -45,8 +45,9 @@ func TestBroadcastQueryCountIndependentOfConnections(t *testing.T) {
 	s.broadcast("r")
 	fifty := st.QueryCount() - before
 
-	if one != fifty {
-		t.Fatalf("broadcast queries: 1 conn=%d, 50 conns=%d — must not scale with connections", one, fifty)
+	// One room load: the vote, its participants, options and ballots.
+	if one != 4 || fifty != 4 {
+		t.Fatalf("broadcast queries: 1 conn=%d, 50 conns=%d, want 4 each (one room load, not per connection)", one, fifty)
 	}
 
 	// Every connection still gets its own personalized snapshot.

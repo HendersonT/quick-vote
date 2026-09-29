@@ -219,9 +219,23 @@ func TestWebSocketMessagesAfterAuthIgnored(t *testing.T) {
 	if snap := readSnapshot(t, conn); snap["you"] != nil {
 		t.Fatal("spectator snapshot must not carry you")
 	}
-	_ = conn.WriteJSON(map[string]string{"type": "auth", "token": tok})
-	_ = conn.WriteMessage(websocket.TextMessage, []byte("garbage"))
-	s.Broadcast(slug)
+	if err := conn.WriteJSON(map[string]string{"type": "auth", "token": tok}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("garbage")); err != nil {
+		t.Fatal(err)
+	}
+	// The server reads frames in order and answers a ping from its read
+	// loop, so its pong proves both messages above were already read (and
+	// ignored). Only then broadcast: the snapshot that follows shows the
+	// connection's identity after those messages, and that it survived.
+	conn.SetPongHandler(func(string) error {
+		s.Broadcast(slug)
+		return nil
+	})
+	if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	if snap := readSnapshot(t, conn); snap["you"] != nil {
 		t.Fatal("a second auth message must not upgrade a spectator")
 	}
