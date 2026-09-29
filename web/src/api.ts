@@ -51,9 +51,18 @@ export function createVote(
   });
 }
 
-export function getVote(slug: string, sessionToken?: string): Promise<RoomState> {
+/**
+ * Fetches the room state, personalized when a session token is given. The
+ * creator token is needed too for the creator's snapshot to include the
+ * follow-up vote's creator token.
+ */
+export function getVote(
+  slug: string,
+  sessionToken?: string,
+  creatorToken?: string,
+): Promise<RoomState> {
   return request<RoomState>(`/votes/${slug}`, {
-    headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : undefined,
+    headers: sessionToken ? authHeaders(sessionToken, creatorToken) : undefined,
   });
 }
 

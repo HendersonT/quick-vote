@@ -142,7 +142,7 @@ export default function Room({ slug }: RoomProps) {
         addToHistory(slug, next.title);
       }
       setHistoryClosed(slug, next.closed);
-    });
+    }, session.creatorToken);
   }, [slug, session]);
 
   function handleJoined(sessionToken: string, name: string, joinedState: RoomState) {
