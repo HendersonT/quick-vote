@@ -399,6 +399,20 @@ func TestOptions(t *testing.T) {
 	if len(opts) != 1 || opts[0].ID != "o2" {
 		t.Fatalf("expected only o2 remaining, got %v", opts)
 	}
+
+	// DeleteOptionAny ignores ownership but stays scoped to the vote.
+	if err := st.DeleteOptionAny("other-vote", "o2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteOptionAny wrong vote: %v, want ErrNotFound", err)
+	}
+	if err := st.DeleteOptionAny("vote1", "o2"); err != nil {
+		t.Fatalf("DeleteOptionAny: %v", err)
+	}
+	if err := st.DeleteOptionAny("vote1", "o2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteOptionAny missing: %v, want ErrNotFound", err)
+	}
+	if opts, _ = st.Options("vote1"); len(opts) != 0 {
+		t.Fatalf("expected no options left, got %v", opts)
+	}
 }
 
 func TestBallots(t *testing.T) {

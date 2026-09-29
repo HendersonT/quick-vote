@@ -581,6 +581,31 @@ func (s *Store) DeleteOption(slug, optionID, participantID string) error {
 	return nil
 }
 
+// DeleteOptionAny deletes an option regardless of who suggested it. Callers
+// must already have authenticated the vote's creator: this is the moderation
+// path (spec B2), so unlike DeleteOption it has no owner filter. Returns
+// ErrNotFound if the option doesn't exist in this vote.
+func (s *Store) DeleteOptionAny(slug, optionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	res, err := s.db.Exec(
+		`DELETE FROM options WHERE id = ? AND vote_slug = ?`,
+		optionID, slug,
+	)
+	if err != nil {
+		return fmt.Errorf("delete option: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete option rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Options returns all options of a vote in creation order.
 func (s *Store) Options(slug string) ([]OptionRow, error) {
 	s.queries.Add(1)

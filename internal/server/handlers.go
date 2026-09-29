@@ -469,7 +469,13 @@ func (s *Server) handleCreateSuggestion(w http.ResponseWriter, r *http.Request) 
 
 // handleDeleteSuggestion implements DELETE
 // /api/votes/{slug}/suggestions/{id}. A participant may only delete their own
-// suggestions, and only during the suggesting phase.
+// suggestions, and only during the suggesting phase. The creator, presenting
+// X-Creator-Token, may delete anyone's (spec B2) — still suggest phase only,
+// since no ballots exist yet and nothing needs rewriting.
+//
+// A present-but-wrong creator token is a 403 rather than a silent fallback to
+// the owner-only path, so a client with a stale token learns it instead of
+// getting a misleading "not yours" 404.
 func (s *Server) handleDeleteSuggestion(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
 	defer s.lockSlug(slug)()
@@ -477,7 +483,13 @@ func (s *Server) handleDeleteSuggestion(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	p, ok := s.requireParticipant(w, r, slug)
+	asCreator := r.Header.Get("X-Creator-Token") != ""
+	var p store.ParticipantRow
+	if asCreator {
+		p, ok = s.requireCreator(w, r, v)
+	} else {
+		p, ok = s.requireParticipant(w, r, slug)
+	}
 	if !ok {
 		return
 	}
@@ -486,9 +498,19 @@ func (s *Server) handleDeleteSuggestion(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := s.store.DeleteOption(slug, id, p.ID); err != nil {
+	var err error
+	if asCreator {
+		err = s.store.DeleteOptionAny(slug, id)
+	} else {
+		err = s.store.DeleteOption(slug, id, p.ID)
+	}
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "suggestion not found or not yours")
+			msg := "suggestion not found or not yours"
+			if asCreator {
+				msg = "suggestion not found"
+			}
+			writeError(w, http.StatusNotFound, msg)
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal error")

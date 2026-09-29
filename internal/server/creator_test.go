@@ -170,3 +170,46 @@ func TestRemovedParticipantWSDowngradesToSpectator(t *testing.T) {
 		t.Fatalf("removed participant's live connection still personalized: %v", snap["you"])
 	}
 }
+
+func TestCreatorDeletesAnySuggestion(t *testing.T) {
+	s := newTestServer(t)
+	slug, ct, aliceTok, _ := createVote(t, s, nil)
+	bobTok := join(t, s, slug, "Bob")
+	_, st := suggest(t, s, slug, bobTok, "spam")
+	id := optionTitleToID(t, st)["spam"]
+	path := "/api/votes/" + slug + "/suggestions/" + id
+
+	if rec, _ := doHdr(t, s, http.MethodDelete, path, nil, aliceTok, ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("creator without creator token deletes others': %d, want 404 (owner-only path)", rec.Code)
+	}
+	if rec, _ := doHdr(t, s, http.MethodDelete, path, nil, aliceTok, "wrong"); rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong creator token: %d, want 403", rec.Code)
+	}
+	// A non-creator session can't borrow the real creator token.
+	if rec, _ := doHdr(t, s, http.MethodDelete, path, nil, bobTok, ct); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-creator with creator token: %d, want 403", rec.Code)
+	}
+	rec, st := doHdr(t, s, http.MethodDelete, path, nil, aliceTok, ct)
+	if rec.Code != http.StatusOK || len(st["options"].([]any)) != 0 {
+		t.Fatalf("creator delete: %d options=%v", rec.Code, st["options"])
+	}
+	if rec, _ := doHdr(t, s, http.MethodDelete, path, nil, aliceTok, ct); rec.Code != http.StatusNotFound {
+		t.Fatalf("creator delete of missing suggestion: %d, want 404", rec.Code)
+	}
+}
+
+func TestCreatorDeleteSuggestionOnlyWhileSuggesting(t *testing.T) {
+	s := newTestServer(t)
+	slug, ct, aliceTok, _ := createVote(t, s, map[string]any{"suggestAdvanceMode": "manual"})
+	bobTok := join(t, s, slug, "Bob")
+	suggest(t, s, slug, aliceTok, "other")
+	_, st := suggest(t, s, slug, bobTok, "keep")
+	id := optionTitleToID(t, st)["keep"]
+	if rec, _ := doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/advance", map[string]any{}, aliceTok, ct); rec.Code != http.StatusOK {
+		t.Fatalf("advance: %d %s", rec.Code, rec.Body.String())
+	}
+	rec, _ := doHdr(t, s, http.MethodDelete, "/api/votes/"+slug+"/suggestions/"+id, nil, aliceTok, ct)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("creator delete during voting: %d, want 409", rec.Code)
+	}
+}
