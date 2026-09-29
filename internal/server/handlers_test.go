@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -330,5 +331,44 @@ func TestCreateVoteRejectsOversizedBody(t *testing.T) {
 	rec, _ := doJSON(t, s, http.MethodPost, "/api/votes", body, "")
 	if rec.Code < 400 || rec.Code >= 500 {
 		t.Fatalf("expected a 4xx for oversized body, got %d", rec.Code)
+	}
+}
+
+// TestLengthLimitsCountCharacters: the client caps titles at 200 and names
+// at 50 characters, so the server must count characters too, not UTF-8
+// bytes — or a title of 150 accented letters is rejected at 300 bytes.
+func TestLengthLimitsCountCharacters(t *testing.T) {
+	s := newTestServer(t)
+	e := func(n int) string { return strings.Repeat("é", n) } // 2 bytes each
+
+	create := func(title, name string) int {
+		rec, _ := doJSON(t, s, http.MethodPost, "/api/votes", map[string]any{"title": title, "creatorName": name}, "")
+		return rec.Code
+	}
+	if code := create(e(150), "Alice"); code != http.StatusCreated {
+		t.Fatalf("150-character title: %d, want 201", code)
+	}
+	if code := create(e(201), "Alice"); code != http.StatusBadRequest {
+		t.Fatalf("201-character title: %d, want 400", code)
+	}
+	if code := create("T", e(50)); code != http.StatusCreated {
+		t.Fatalf("50-character creator name: %d, want 201", code)
+	}
+	if code := create("T", e(51)); code != http.StatusBadRequest {
+		t.Fatalf("51-character creator name: %d, want 400", code)
+	}
+
+	slug, _, aliceTok, _ := createVote(t, s, map[string]any{"maxSuggestionsPerUser": 6})
+	if rec, _ := doJSON(t, s, http.MethodPost, "/api/votes/"+slug+"/join", map[string]any{"name": e(50)}, ""); rec.Code != http.StatusOK {
+		t.Fatalf("50-character join name: %d, want 200", rec.Code)
+	}
+	if rec, _ := doJSON(t, s, http.MethodPost, "/api/votes/"+slug+"/join", map[string]any{"name": e(51)}, ""); rec.Code != http.StatusBadRequest {
+		t.Fatalf("51-character join name: %d, want 400", rec.Code)
+	}
+	if rec, _ := suggest(t, s, slug, aliceTok, e(150)); rec.Code != http.StatusOK {
+		t.Fatalf("150-character suggestion: %d, want 200", rec.Code)
+	}
+	if rec, _ := suggest(t, s, slug, aliceTok, e(201)); rec.Code != http.StatusBadRequest {
+		t.Fatalf("201-character suggestion: %d, want 400", rec.Code)
 	}
 }

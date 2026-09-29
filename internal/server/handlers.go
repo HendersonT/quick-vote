@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -110,6 +111,15 @@ func (p *settingsPatch) applyTo(s domain.Settings) domain.Settings {
 	return s
 }
 
+// Length limits, in characters (runes), not UTF-8 bytes: the web client
+// counts characters too (UTF-16 units, which is never fewer than runes), so
+// nothing it accepts is rejected here, and non-ASCII text gets the same
+// room as ASCII.
+const (
+	maxTitleChars = 200 // vote and suggestion titles
+	maxNameChars  = 50  // participant names
+)
+
 type createVoteRequest struct {
 	Title       string         `json:"title"`
 	CreatorName string         `json:"creatorName"`
@@ -142,7 +152,7 @@ func (s *Server) handleCreateVote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "creatorName is required")
 		return
 	}
-	if len(creatorName) > 50 {
+	if utf8.RuneCountInString(creatorName) > maxNameChars {
 		writeError(w, http.StatusBadRequest, "creatorName must be at most 50 characters")
 		return
 	}
@@ -201,7 +211,7 @@ func validateTitle(raw string) (string, string) {
 	if title == "" {
 		return "", "title is required"
 	}
-	if len(title) > 200 {
+	if utf8.RuneCountInString(title) > maxTitleChars {
 		return "", "title must be at most 200 characters"
 	}
 	return title, ""
@@ -271,7 +281,7 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if len(name) > 50 {
+	if utf8.RuneCountInString(name) > maxNameChars {
 		writeError(w, http.StatusBadRequest, "name must be at most 50 characters")
 		return
 	}
@@ -448,7 +458,7 @@ func (s *Server) handleCreateSuggestion(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "title is required")
 		return
 	}
-	if len(title) > 200 {
+	if utf8.RuneCountInString(title) > maxTitleChars {
 		writeError(w, http.StatusBadRequest, "title must be at most 200 characters")
 		return
 	}
