@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { getVote } from "../api";
 import { navigate } from "../App";
+import { MovedOnBanner } from "../components/JoinGate";
+import LoadFailed from "../components/LoadFailed";
 import ResultsPhase from "../components/ResultsPhase";
 import type { Phase, RoomState } from "../types";
 import { connectRoom } from "../ws";
@@ -31,7 +33,7 @@ function phaseSummary(state: RoomState): string {
  */
 export default function ResultsView({ slug }: { slug: string }) {
   const [state, setState] = useState<RoomState | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   // Fetch first so an unknown slug shows not-found instead of a WebSocket
   // that reconnects forever against a 404.
@@ -42,7 +44,7 @@ export default function ResultsView({ slug }: { slug: string }) {
         if (!cancelled) setState(s);
       })
       .catch((err) => {
-        if (!cancelled) setLoadError(err instanceof Error ? err.message : "Vote not found.");
+        if (!cancelled) setLoadError(err ?? new Error("load failed"));
       });
     return () => {
       cancelled = true;
@@ -56,13 +58,7 @@ export default function ResultsView({ slug }: { slug: string }) {
   }, [slug, found]);
 
   if (loadError) {
-    return (
-      <main className="not-found">
-        <h1>Vote not found</h1>
-        <p>{loadError}</p>
-        <a href="/">Back home</a>
-      </main>
-    );
+    return <LoadFailed error={loadError} what="results" />;
   }
 
   if (!state) {
@@ -87,6 +83,7 @@ export default function ResultsView({ slug }: { slug: string }) {
           This vote is closed.
         </p>
       )}
+      {state.next && <MovedOnBanner next={state.next} />}
 
       {state.phase === "results" ? (
         <ResultsPhase

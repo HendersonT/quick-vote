@@ -2,8 +2,22 @@ import type { RoomState, Settings } from "./types";
 
 const BASE = "/api";
 
-interface ApiError {
+interface ErrorBody {
   error: string;
+}
+
+/**
+ * A non-2xx API response. `status` lets callers tell "no such vote" (404)
+ * apart from failures that say nothing about whether the vote exists.
+ */
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
 }
 
 async function request<T>(
@@ -19,8 +33,8 @@ async function request<T>(
   });
   const json = await res.json().catch(() => ({}) as unknown);
   if (!res.ok) {
-    const message = (json as ApiError)?.error ?? `request failed: ${res.status}`;
-    throw new Error(message);
+    const message = (json as ErrorBody)?.error ?? `request failed: ${res.status}`;
+    throw new ApiError(res.status, message);
   }
   return json as T;
 }

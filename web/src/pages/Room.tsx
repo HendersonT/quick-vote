@@ -4,6 +4,7 @@ import { navigate } from "../App";
 import ConfirmButton from "../components/ConfirmButton";
 import Countdown from "../components/Countdown";
 import JoinGate, { MovedOnBanner } from "../components/JoinGate";
+import LoadFailed from "../components/LoadFailed";
 import NextVoteForm from "../components/NextVoteForm";
 import ParticipantList from "../components/ParticipantList";
 import ResultsPhase from "../components/ResultsPhase";
@@ -73,7 +74,7 @@ export default function Room({ slug }: RoomProps) {
   const [session, setSession] = useState<Session | null>(() => getSession(slug));
   const [state, setState] = useState<RoomState | null>(null);
   const [preJoin, setPreJoin] = useState<PreJoinInfo | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [controlError, setControlError] = useState<string | null>(null);
   const [controlBusy, setControlBusy] = useState(false);
   const [showNextForm, setShowNextForm] = useState(false);
@@ -101,9 +102,7 @@ export default function Room({ slug }: RoomProps) {
         if (!cancelled) setPreJoin({ title: s.title, closed: s.closed, next: s.next });
       })
       .catch((err) => {
-        if (!cancelled) {
-          setLoadError(err instanceof Error ? err.message : "Vote not found.");
-        }
+        if (!cancelled) setLoadError(err ?? new Error("load failed"));
       });
     return () => {
       cancelled = true;
@@ -192,13 +191,7 @@ export default function Room({ slug }: RoomProps) {
 
   if (!session) {
     if (loadError) {
-      return (
-        <main className="not-found">
-          <h1>Vote not found</h1>
-          <p>{loadError}</p>
-          <a href="/">Back home</a>
-        </main>
-      );
+      return <LoadFailed error={loadError} what="this vote" />;
     }
     return (
       <JoinGate
