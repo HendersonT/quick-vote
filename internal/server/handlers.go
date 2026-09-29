@@ -164,7 +164,7 @@ func (s *Server) handleCreateVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now()
+	now := s.now()
 	slug := ids.NewSlug()
 	creatorToken := ids.NewToken()
 	sessionToken := ids.NewToken()
@@ -273,7 +273,7 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		VoteSlug: slug,
 		Name:     name,
 		Token:    sessionToken,
-		JoinedAt: time.Now().Unix(),
+		JoinedAt: s.now().Unix(),
 	}
 	if err := s.store.AddParticipant(p); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to join")
@@ -493,7 +493,7 @@ func (s *Server) handleCreateSuggestion(w http.ResponseWriter, r *http.Request) 
 		VoteSlug:      slug,
 		ParticipantID: p.ID,
 		Title:         title,
-		CreatedAt:     time.Now().Unix(),
+		CreatedAt:     s.now().Unix(),
 	}
 	if err := s.store.AddOption(o); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to add suggestion")
@@ -719,7 +719,7 @@ func (s *Server) handleRevote(w http.ResponseWriter, r *http.Request) {
 		// play, per F5.
 		v.ActiveOptions = nil
 		if settings.VoteTimerSecs > 0 {
-			d := time.Now().Add(time.Duration(settings.VoteTimerSecs) * time.Second).Unix()
+			d := s.now().Add(time.Duration(settings.VoteTimerSecs) * time.Second).Unix()
 			v.PhaseDeadline = &d
 		}
 		if err := s.store.UpdateVote(v); err != nil {

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/HendersonT/quick-vote/internal/clock"
 )
 
 // Scheduler arms at most one deadline timer per vote slug. Setting a deadline
@@ -11,14 +13,15 @@ import (
 // deadline fires, the configured fire callback is invoked with the slug.
 type Scheduler struct {
 	mu     sync.Mutex
-	timers map[string]*time.Timer
+	clock  clock.Clock
+	timers map[string]clock.Timer
 	fire   func(slug string)
 }
 
 // NewScheduler returns a Scheduler that calls fire(slug) when a slug's armed
-// deadline elapses.
-func NewScheduler(fire func(slug string)) *Scheduler {
-	return &Scheduler{timers: map[string]*time.Timer{}, fire: fire}
+// deadline elapses on clock c.
+func NewScheduler(c clock.Clock, fire func(slug string)) *Scheduler {
+	return &Scheduler{clock: c, timers: map[string]clock.Timer{}, fire: fire}
 }
 
 // Set arms (or re-arms) the deadline for slug. A deadline at or before now
@@ -30,11 +33,11 @@ func (sc *Scheduler) Set(slug string, at time.Time) {
 		t.Stop()
 		delete(sc.timers, slug)
 	}
-	d := time.Until(at)
+	d := at.Sub(sc.clock.Now())
 	if d < 0 {
 		d = 0
 	}
-	sc.timers[slug] = time.AfterFunc(d, func() {
+	sc.timers[slug] = sc.clock.AfterFunc(d, func() {
 		sc.mu.Lock()
 		delete(sc.timers, slug)
 		sc.mu.Unlock()

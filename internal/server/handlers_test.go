@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/HendersonT/quick-vote/internal/clock"
 	"github.com/HendersonT/quick-vote/internal/server"
 	"github.com/HendersonT/quick-vote/internal/store"
 )
@@ -20,6 +22,19 @@ func newTestServer(t *testing.T) *server.Server {
 	}
 	t.Cleanup(func() { st.Close() })
 	return server.New(st, nil)
+}
+
+// newFakeClockServer returns a server whose deadlines and timestamps run on
+// a manually advanced clock, so timer behavior is tested without sleeping.
+func newFakeClockServer(t *testing.T) (*server.Server, *clock.Fake) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	fc := clock.NewFake(time.Unix(1_700_000_000, 0))
+	return server.NewWithConfig(st, nil, server.Config{Clock: fc}), fc
 }
 
 // doJSON issues an HTTP request against the server's handler directly

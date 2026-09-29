@@ -9,7 +9,7 @@ import (
 // its in-memory state (armed timers, per-room locks, live connections).
 // Returns how many votes were removed.
 func (s *Server) PruneExpired(retention time.Duration) (int, error) {
-	slugs, err := s.store.DeleteVotesCreatedBefore(time.Now().Add(-retention).Unix())
+	slugs, err := s.store.DeleteVotesCreatedBefore(s.now().Add(-retention).Unix())
 	if err != nil {
 		return 0, err
 	}

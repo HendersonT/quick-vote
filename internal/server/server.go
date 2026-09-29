@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/HendersonT/quick-vote/internal/clock"
 	"github.com/HendersonT/quick-vote/internal/store"
 )
 
@@ -43,6 +44,9 @@ type Config struct {
 	// AllowedOrigins lists extra origins (scheme://host[:port]) permitted to
 	// open WebSockets, beyond the page's own origin.
 	AllowedOrigins []string
+	// Clock drives deadlines, timestamps and pruning. nil means real time;
+	// tests inject clock.NewFake.
+	Clock clock.Clock
 }
 
 // Server wires the chi router to a Store and (optionally) a static asset
@@ -55,6 +59,7 @@ type Server struct {
 	onChange  func(slug string)
 	hub       *hub
 	cfg       Config
+	clock     clock.Clock
 
 	// writeLimit throttles every mutating request per client IP; createLimit
 	// and createGlobal additionally throttle vote creation, the one endpoint
@@ -95,22 +100,29 @@ func New(st *store.Store, staticFS fs.FS) *Server {
 
 // NewWithConfig builds a Server with explicit deployment options.
 func NewWithConfig(st *store.Store, staticFS fs.FS, cfg Config) *Server {
+	if cfg.Clock == nil {
+		cfg.Clock = clock.Real()
+	}
 	s := &Server{
 		store:     st,
 		static:    staticFS,
 		hub:       newHub(),
 		cfg:       cfg,
+		clock:     cfg.Clock,
 		slugLocks: map[string]*sync.Mutex{},
 		// Generous enough for a whole party behind one NAT'd IP.
 		writeLimit:   newRateLimiter(120, 500*time.Millisecond),
 		createLimit:  newRateLimiter(10, time.Minute),
 		createGlobal: newRateLimiter(100, 10*time.Second),
 	}
-	s.scheduler = NewScheduler(func(slug string) { s.timerFired(slug) })
+	s.scheduler = NewScheduler(s.clock, func(slug string) { s.timerFired(slug) })
 	s.router = s.routes()
 	s.onChange = s.broadcast
 	return s
 }
+
+// now is the server's notion of the current time (injectable for tests).
+func (s *Server) now() time.Time { return s.clock.Now() }
 
 // SetOnChange registers a hook invoked with a vote's slug whenever that vote's
 // room state changes. The WebSocket hub (Task 8) uses it to broadcast fresh

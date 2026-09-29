@@ -63,7 +63,7 @@ func (s *Server) advancePhase(slug string, byCreator bool, tiebreakWinner string
 		// (defensive; normally nil already at this point).
 		v.ActiveOptions = nil
 		if settings.VoteTimerSecs > 0 {
-			d := time.Now().Add(time.Duration(settings.VoteTimerSecs) * time.Second).Unix()
+			d := s.now().Add(time.Duration(settings.VoteTimerSecs) * time.Second).Unix()
 			v.PhaseDeadline = &d
 		}
 		if err := s.store.UpdateVote(v); err != nil {
@@ -186,7 +186,7 @@ func (s *Server) enterRunoff(v store.VoteRow, settings domain.Settings, tiedIDs 
 	v.Results = nil
 	v.PhaseDeadline = nil
 	if settings.VoteTimerSecs > 0 {
-		d := time.Now().Add(time.Duration(settings.VoteTimerSecs) * time.Second).Unix()
+		d := s.now().Add(time.Duration(settings.VoteTimerSecs) * time.Second).Unix()
 		v.PhaseDeadline = &d
 	}
 	if err := s.store.UpdateVote(v); err != nil {

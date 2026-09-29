@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HendersonT/quick-vote/internal/clock"
 	"github.com/HendersonT/quick-vote/internal/server"
 	"github.com/HendersonT/quick-vote/internal/store"
 )
@@ -22,7 +23,10 @@ func TestRearmTimersFiresPastDueDeadline(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	s1 := server.New(st, nil)
+	// Both "processes" share one fake clock so the persisted deadline is
+	// past-due from the restarted server's point of view.
+	fc := clock.NewFake(time.Unix(1_700_000_000, 0))
+	s1 := server.NewWithConfig(st, nil, server.Config{Clock: fc})
 
 	slug, creatorTok, aliceTok, _ := createVote(t, s1, map[string]any{
 		"suggestAdvanceMode": "manual",
@@ -47,31 +51,26 @@ func TestRearmTimersFiresPastDueDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get vote: %v", err)
 	}
-	past := time.Now().Add(-time.Second).Unix()
+	past := fc.Now().Add(-time.Minute).Unix()
 	v.PhaseDeadline = &past
 	if err := st.UpdateVote(v); err != nil {
 		t.Fatalf("update vote deadline: %v", err)
 	}
 
 	// Simulate restart: fresh server on the same store, then re-arm.
-	s2 := server.New(st, nil)
+	s2 := server.NewWithConfig(st, nil, server.Config{Clock: fc})
 	if err := s2.RearmTimers(); err != nil {
 		t.Fatalf("RearmTimers: %v", err)
 	}
 
-	// The past-due deadline should fire promptly and advance voting -> results.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		cur, err := st.GetVote(slug)
-		if err != nil {
-			t.Fatalf("get vote: %v", err)
-		}
-		if cur.Phase == "results" {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("phase = %q, want results after re-armed timer fired", cur.Phase)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The past-due deadline fires on the next clock tick and advances
+	// voting -> results.
+	fc.Advance(0)
+	cur, err := st.GetVote(slug)
+	if err != nil {
+		t.Fatalf("get vote: %v", err)
+	}
+	if cur.Phase != "results" {
+		t.Fatalf("phase = %q, want results after re-armed timer fired", cur.Phase)
 	}
 }

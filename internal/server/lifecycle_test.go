@@ -398,8 +398,8 @@ func TestCreatorTiebreakFlow(t *testing.T) {
 }
 
 func TestSuggestTimerAutoAdvance(t *testing.T) {
-	s := newTestServer(t)
-	slug, _, aliceTok, _ := createVote(t, s, map[string]any{"suggestTimerSecs": 1})
+	s, fc := newFakeClockServer(t)
+	slug, _, aliceTok, _ := createVote(t, s, map[string]any{"suggestTimerSecs": 60})
 	if rec, _ := suggest(t, s, slug, aliceTok, "Catan"); rec.Code != http.StatusOK {
 		t.Fatalf("suggest A: %d", rec.Code)
 	}
@@ -407,26 +407,24 @@ func TestSuggestTimerAutoAdvance(t *testing.T) {
 		t.Fatalf("suggest B: %d", rec.Code)
 	}
 
-	// Wait for the 1s suggest timer to fire and advance the phase.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		st := getState(t, s, slug, aliceTok)
-		if st["phase"] == "voting" {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+	fc.Advance(59 * time.Second)
+	if st := getState(t, s, slug, aliceTok); st["phase"] != "suggesting" {
+		t.Fatalf("phase = %v before deadline, want suggesting", st["phase"])
 	}
-	t.Fatalf("phase did not advance to voting after suggest timer expiry")
+	fc.Advance(time.Second)
+	if st := getState(t, s, slug, aliceTok); st["phase"] != "voting" {
+		t.Fatalf("phase = %v at deadline, want voting", st["phase"])
+	}
 }
 
 func TestSuggestTimerHoldsWithTooFewOptions(t *testing.T) {
-	s := newTestServer(t)
-	slug, _, aliceTok, _ := createVote(t, s, map[string]any{"suggestTimerSecs": 1})
+	s, fc := newFakeClockServer(t)
+	slug, _, aliceTok, _ := createVote(t, s, map[string]any{"suggestTimerSecs": 60})
 	if rec, _ := suggest(t, s, slug, aliceTok, "Only"); rec.Code != http.StatusOK {
 		t.Fatalf("suggest: %d", rec.Code)
 	}
 
-	time.Sleep(1500 * time.Millisecond)
+	fc.Advance(61 * time.Second)
 	st := getState(t, s, slug, aliceTok)
 	if st["phase"] != "suggesting" {
 		t.Fatalf("phase = %v, want suggesting held with <2 options", st["phase"])
