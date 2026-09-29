@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"sync"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
+
+	"github.com/HendersonT/quick-vote/internal/store"
 )
 
 const (
@@ -330,8 +333,17 @@ func (s *Server) wsWritePump(c *wsConn) {
 // pushSnapshot builds c's personalized room-state snapshot and enqueues it
 // for delivery. It is used for the initial push on connect; room changes go
 // through broadcast, which shares one room load across all connections.
+//
+// If the vote is gone (pruned after the upgrade's existence check), the
+// connection is closed: PruneExpired's sweep only saw registered
+// connections, and this one would otherwise sit open with nothing to show.
 func (s *Server) pushSnapshot(c *wsConn) {
 	d, err := s.loadRoom(c.slug)
+	if errors.Is(err, store.ErrNotFound) {
+		s.hub.remove(c)
+		c.close()
+		return
+	}
 	if err != nil {
 		return
 	}

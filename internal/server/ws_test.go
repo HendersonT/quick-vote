@@ -226,3 +226,23 @@ func TestWebSocketMessagesAfterAuthIgnored(t *testing.T) {
 		t.Fatal("a second auth message must not upgrade a spectator")
 	}
 }
+
+// TestWebSocketClosedWhenVoteGoneAtAuth: a vote pruned between the upgrade
+// and the auth message has nothing to show; the connection must be closed
+// rather than left open and silent.
+func TestWebSocketClosedWhenVoteGoneAtAuth(t *testing.T) {
+	s, ts := newWSTestServer(t)
+	slug, _, _, _ := createVote(t, s, nil)
+	conn := dialRaw(t, ts, slug)
+	if n, err := s.PruneExpired(-time.Hour); err != nil || n != 1 {
+		t.Fatalf("prune: n=%d err=%v", n, err)
+	}
+	if err := conn.WriteJSON(map[string]string{"type": "auth", "token": ""}); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, err := conn.ReadMessage()
+	if !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+		t.Fatalf("want a normal close for a vote that is gone, got %v", err)
+	}
+}
