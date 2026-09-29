@@ -7,6 +7,8 @@ interface ResultsPhaseProps {
   sessionToken: string;
   creatorToken?: string;
   state: RoomState;
+  /** True while the vote is closed: re-vote and tiebreak are disabled (spec B3). */
+  closed?: boolean;
 }
 
 /** Score bars, winner/tie banner, and the re-vote toggle for `results`. */
@@ -15,6 +17,7 @@ export default function ResultsPhase({
   sessionToken,
   creatorToken,
   state,
+  closed = false,
 }: ResultsPhaseProps) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -84,7 +87,7 @@ export default function ResultsPhase({
                   <button
                     type="button"
                     className="tie-option-button"
-                    disabled={busy}
+                    disabled={busy || closed}
                     onClick={() => handlePickWinner(id)}
                   >
                     Pick {optionTitle(id)}
@@ -144,7 +147,7 @@ export default function ResultsPhase({
       </ul>
 
       <div className="revote-panel">
-        <button type="button" onClick={handleToggleRevote} disabled={busy}>
+        <button type="button" onClick={handleToggleRevote} disabled={busy || closed}>
           {wantsRevote ? "Withdraw call" : "Call for re-vote"}
         </button>
         <span className="revote-count">

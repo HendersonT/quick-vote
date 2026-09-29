@@ -1,15 +1,26 @@
 import { useState, type FormEvent } from "react";
 import { addSuggestion, deleteSuggestion, toggleDoneSuggesting } from "../api";
 import type { RoomState } from "../types";
+import ConfirmButton from "./ConfirmButton";
 
 interface SuggestPhaseProps {
   slug: string;
   sessionToken: string;
+  /** Present for the creator, who may delete anyone's suggestion (spec B2). */
+  creatorToken?: string;
   state: RoomState;
+  /** True while the vote is closed: every input is disabled (spec B3). */
+  closed?: boolean;
 }
 
 /** Suggestion list + add form for the `suggesting` phase. */
-export default function SuggestPhase({ slug, sessionToken, state }: SuggestPhaseProps) {
+export default function SuggestPhase({
+  slug,
+  sessionToken,
+  creatorToken,
+  state,
+  closed = false,
+}: SuggestPhaseProps) {
   const [title, setTitle] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -21,12 +32,13 @@ export default function SuggestPhase({ slug, sessionToken, state }: SuggestPhase
     : 0;
   const cap = state.settings.maxSuggestionsPerUser;
   const capReached = mySuggestionCount >= cap;
+  const isCreator = (you?.isCreator ?? false) && !!creatorToken;
   const doneSuggesting = you
     ? (state.participants.find((p) => p.id === you.participantId)?.doneSuggesting ?? false)
     : false;
 
   function participantName(id: string): string {
-    return state.participants.find((p) => p.id === id)?.name ?? "someone";
+    return state.participants.find((p) => p.id === id)?.name ?? "removed participant";
   }
 
   async function handleToggleDone() {
@@ -60,10 +72,10 @@ export default function SuggestPhase({ slug, sessionToken, state }: SuggestPhase
     }
   }
 
-  async function handleDelete(optionId: string) {
+  async function handleDelete(optionId: string, asCreator = false) {
     setError(null);
     try {
-      await deleteSuggestion(slug, sessionToken, optionId);
+      await deleteSuggestion(slug, sessionToken, optionId, asCreator ? creatorToken : undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete suggestion.");
     }
@@ -80,15 +92,29 @@ export default function SuggestPhase({ slug, sessionToken, state }: SuggestPhase
           <li key={o.id} className="option-item">
             <span className="option-title">{o.title}</span>
             <span className="option-by">by {participantName(o.suggestedById)}</span>
-            {you && o.suggestedById === you.participantId && (
+            {you && o.suggestedById === you.participantId ? (
               <button
                 type="button"
                 className="delete-button"
                 onClick={() => handleDelete(o.id)}
                 aria-label={`Delete ${o.title}`}
+                disabled={closed}
               >
                 Delete
               </button>
+            ) : (
+              isCreator && (
+                // Deleting someone else's suggestion is a moderation action,
+                // so it gets the two-step confirm; deleting your own doesn't.
+                <ConfirmButton
+                  label="Delete"
+                  confirmLabel="Delete"
+                  className="delete-button"
+                  ariaLabel={`Delete ${o.title}`}
+                  disabled={closed}
+                  onConfirm={() => handleDelete(o.id, true)}
+                />
+              )
             )}
           </li>
         ))}
@@ -108,12 +134,12 @@ export default function SuggestPhase({ slug, sessionToken, state }: SuggestPhase
             value={title}
             maxLength={200}
             placeholder="Catan"
-            disabled={capReached}
+            disabled={capReached || closed}
             onChange={(e) => setTitle(e.target.value)}
           />
         </div>
         <div className="actions">
-          <button type="submit" disabled={submitting || capReached}>
+          <button type="submit" disabled={submitting || capReached || closed}>
             Add
           </button>
           <span className="suggestion-count">
@@ -124,7 +150,7 @@ export default function SuggestPhase({ slug, sessionToken, state }: SuggestPhase
 
       {you && (
         <div className="done-suggesting-panel">
-          <button type="button" onClick={handleToggleDone} disabled={togglingDone}>
+          <button type="button" onClick={handleToggleDone} disabled={togglingDone || closed}>
             {doneSuggesting ? "Resume suggesting" : "I'm done suggesting"}
           </button>
           {doneSuggesting && (

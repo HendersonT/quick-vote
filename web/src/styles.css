@@ -65,6 +65,8 @@ p {
   --color-success-soft: #ecfdf3;
   --color-warn: #b45309;
   --color-warn-soft: #fef3c7;
+  --color-info: #1d4ed8;
+  --color-info-soft: #eff6ff;
 
   --shadow-sm: 0 1px 2px rgba(20, 22, 26, 0.06), 0 1px 1px rgba(20, 22, 26, 0.04);
   --shadow-md: 0 8px 24px rgba(20, 22, 26, 0.08), 0 2px 6px rgba(20, 22, 26, 0.06);
@@ -109,6 +111,8 @@ p {
     --color-success-soft: rgba(74, 222, 128, 0.14);
     --color-warn: #fbbf24;
     --color-warn-soft: rgba(251, 191, 36, 0.14);
+    --color-info: #93c5fd;
+    --color-info-soft: rgba(147, 197, 253, 0.14);
 
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 1px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.35);
@@ -243,6 +247,26 @@ a:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 500;
+}
+
+.recent-votes-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* Closed votes are listed below open ones and labeled (spec B3). */
+.history-closed {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
 }
 
 .recent-votes-date {
@@ -516,6 +540,91 @@ button:disabled {
   color: var(--color-bg);
 }
 
+.creator-controls > .error-banner {
+  flex-basis: 100%;
+}
+
+/* Inline two-step confirm ("Sure? Yes / Cancel") */
+.confirm-group {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.confirm-prompt {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.confirm-group .confirm-cancel,
+.secondary-button {
+  background: transparent;
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+}
+
+.confirm-group .confirm-cancel:hover:not(:disabled),
+.secondary-button:hover:not(:disabled) {
+  filter: none;
+  color: var(--color-text);
+  border-color: var(--color-text-muted);
+}
+
+/* Creator's per-participant remove control; "×" until armed */
+.remove-participant {
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  background: transparent;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  font-weight: 500;
+  font-size: 0.8125rem;
+}
+
+.remove-participant:hover:not(:disabled),
+.remove-participant.confirm-yes {
+  filter: none;
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+  background: var(--color-danger-soft);
+}
+
+.participant {
+  flex-wrap: wrap;
+}
+
+/* Armed: "Remove / Cancel" drops to its own line so the name stays visible */
+.participant .confirm-group {
+  flex-basis: 100%;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+
+.participant .confirm-prompt {
+  display: none;
+}
+
+.participant .confirm-cancel {
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  font-size: 0.8125rem;
+}
+
+/* "Start another vote with this group" form, under the creator controls */
+.next-vote-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.next-vote-form h2 {
+  margin-bottom: 0;
+}
+
 /* Small ghost/danger button for deleting a suggestion */
 .delete-button {
   min-height: 32px;
@@ -527,7 +636,8 @@ button:disabled {
   font-size: 0.8125rem;
 }
 
-.delete-button:hover:not(:disabled) {
+.delete-button:hover:not(:disabled),
+.delete-button.confirm-yes {
   filter: none;
   color: var(--color-danger);
   border-color: var(--color-danger);
@@ -546,6 +656,70 @@ button:disabled {
   padding: var(--space-3) var(--space-4);
   font-size: 0.875rem;
   font-weight: 500;
+}
+
+/* Informational notices: removed from vote, moved to next vote, moved on */
+.info-banner {
+  background: var(--color-info-soft);
+  color: var(--color-info);
+  border: 1px solid var(--color-info);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.info-banner a {
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.info-banner-dismissible {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.banner-dismiss {
+  min-height: 32px;
+  width: 32px;
+  padding: 0;
+  flex-shrink: 0;
+  background: transparent;
+  color: inherit;
+  border-color: transparent;
+  font-size: 1.125rem;
+  line-height: 1;
+}
+
+.banner-dismiss:hover:not(:disabled) {
+  filter: none;
+  border-color: currentColor;
+}
+
+.closed-banner {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.room > .info-banner,
+.room > .closed-banner {
+  margin-bottom: var(--space-4);
+}
+
+.join-gate > .info-banner,
+.join-gate > .closed-banner {
+  width: 100%;
+  max-width: 360px;
+  margin-bottom: var(--space-3);
 }
 
 .empty-hint,
@@ -620,6 +794,7 @@ button:disabled {
 .creator-controls {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-3);
   padding-top: var(--space-3);
   border-top: 1px solid var(--color-border);

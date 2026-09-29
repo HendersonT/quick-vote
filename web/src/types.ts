@@ -55,6 +55,11 @@ export interface You {
   participantId: string;
   isCreator: boolean;
   ballot: Record<string, number> | null;
+  // Handoff credentials for the follow-up vote (spec B4), present only when
+  // `RoomState.next` is set. The server sends each participant only their
+  // own new session token, and the new creator token only to the creator.
+  nextSessionToken?: string;
+  nextCreatorToken?: string;
 }
 
 export interface OptionResult {
@@ -96,4 +101,9 @@ export interface RoomState {
   // runoff is true iff a "runoff" tiebreaker round is currently restricting
   // voting to a subset of options (see Option.active).
   runoff: boolean;
+  // closed is true while the creator has closed the room: every write is
+  // rejected (409) until it is reopened (spec B3).
+  closed: boolean;
+  // next is the follow-up vote started with this group, or null (spec B4).
+  next: { slug: string; title: string } | null;
 }

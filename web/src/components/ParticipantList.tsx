@@ -1,8 +1,12 @@
 import type { Participant, Phase } from "../types";
+import ConfirmButton from "./ConfirmButton";
 
 interface ParticipantListProps {
   participants: Participant[];
   phase: Phase;
+  /** True for the creator of an open vote: shows a remove control per row. */
+  canRemove?: boolean;
+  onRemove?: (participantId: string) => Promise<void> | void;
 }
 
 /** Per-phase status label: done suggesting / voted / wants re-vote. */
@@ -20,7 +24,12 @@ function isDone(p: Participant, phase: Phase): boolean {
   return p.wantsRevote;
 }
 
-export default function ParticipantList({ participants, phase }: ParticipantListProps) {
+export default function ParticipantList({
+  participants,
+  phase,
+  canRemove = false,
+  onRemove,
+}: ParticipantListProps) {
   return (
     <aside className="participant-list" aria-label="Participants">
       <h2>Participants</h2>
@@ -40,6 +49,15 @@ export default function ParticipantList({ participants, phase }: ParticipantList
               {p.name}
             </span>
             <span className="participant-status">{statusLabel(p, phase)}</span>
+            {canRemove && onRemove && !p.isCreator && (
+              <ConfirmButton
+                label="×"
+                confirmLabel="Remove"
+                className="remove-participant"
+                ariaLabel={`Remove ${p.name}`}
+                onConfirm={() => onRemove(p.id)}
+              />
+            )}
           </li>
         ))}
       </ul>

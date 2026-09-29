@@ -81,14 +81,19 @@ export function addSuggestion(
   });
 }
 
+/**
+ * Deletes a suggestion. Participants may delete their own; passing the
+ * creator token lets the creator delete anyone's (spec B2).
+ */
 export function deleteSuggestion(
   slug: string,
   sessionToken: string,
   optionId: string,
+  creatorToken?: string,
 ): Promise<RoomState> {
   return request<RoomState>(`/votes/${slug}/suggestions/${optionId}`, {
     method: "DELETE",
-    headers: authHeaders(sessionToken),
+    headers: authHeaders(sessionToken, creatorToken),
   });
 }
 
@@ -136,5 +141,63 @@ export function toggleDoneSuggesting(
     method: "POST",
     headers: authHeaders(sessionToken),
     body: JSON.stringify({}),
+  });
+}
+
+/** Creator-only: removes a participant from the vote (spec B1). */
+export function removeParticipant(
+  slug: string,
+  sessionToken: string,
+  creatorToken: string,
+  participantId: string,
+): Promise<RoomState> {
+  return request<RoomState>(`/votes/${slug}/participants/${participantId}`, {
+    method: "DELETE",
+    headers: authHeaders(sessionToken, creatorToken),
+  });
+}
+
+/** Creator-only: closes the vote to all writes (spec B3). Idempotent. */
+export function closeVote(
+  slug: string,
+  sessionToken: string,
+  creatorToken: string,
+): Promise<RoomState> {
+  return request<RoomState>(`/votes/${slug}/close`, {
+    method: "POST",
+    headers: authHeaders(sessionToken, creatorToken),
+    body: JSON.stringify({}),
+  });
+}
+
+/** Creator-only: reopens a closed vote (spec B3). No timer is re-armed. */
+export function reopenVote(
+  slug: string,
+  sessionToken: string,
+  creatorToken: string,
+): Promise<RoomState> {
+  return request<RoomState>(`/votes/${slug}/reopen`, {
+    method: "POST",
+    headers: authHeaders(sessionToken, creatorToken),
+    body: JSON.stringify({}),
+  });
+}
+
+/**
+ * Creator-only: starts a follow-up vote with the same group (spec B4).
+ * Settings default server-side to this vote's; `settings` patches over them.
+ * Same response shape as createVote.
+ */
+export function createNextVote(
+  slug: string,
+  sessionToken: string,
+  creatorToken: string,
+  title: string,
+  settings?: Partial<Settings>,
+): Promise<CreateVoteResponse> {
+  return request<CreateVoteResponse>(`/votes/${slug}/next`, {
+    method: "POST",
+    headers: authHeaders(sessionToken, creatorToken),
+    body: JSON.stringify({ title, settings }),
   });
 }

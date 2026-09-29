@@ -7,6 +7,8 @@ interface VotePhaseProps {
   slug: string;
   sessionToken: string;
   state: RoomState;
+  /** True while the vote is closed: the ballot is read-only (spec B3). */
+  closed?: boolean;
 }
 
 /** Human-readable description of the vote's cost-scaling exponent. */
@@ -17,7 +19,12 @@ function scalingHint(exponent: number): string {
 }
 
 /** Ballot with per-option steppers, veto toggles, a live budget meter, and submit. */
-export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps) {
+export default function VotePhase({
+  slug,
+  sessionToken,
+  state,
+  closed = false,
+}: VotePhaseProps) {
   const [votes, setVotes] = useState<Record<string, number>>(() => state.you?.ballot ?? {});
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -140,7 +147,7 @@ export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps)
                       type="button"
                       className="stepper-button"
                       onClick={() => decrement(o.id)}
-                      disabled={count <= 0}
+                      disabled={closed || count <= 0}
                       aria-label={`Decrease votes for ${o.title}`}
                     >
                       −
@@ -150,7 +157,7 @@ export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps)
                       type="button"
                       className="stepper-button"
                       onClick={() => increment(o.id)}
-                      disabled={!canPlus}
+                      disabled={closed || !canPlus}
                       aria-label={`Increase votes for ${o.title}`}
                     >
                       +
@@ -164,6 +171,7 @@ export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps)
                   type="button"
                   className="veto-toggle"
                   onClick={() => toggleVeto(o.id)}
+                  disabled={closed}
                   aria-label={vetoed ? `Undo veto for ${o.title}` : `Veto ${o.title}`}
                 >
                   {vetoed ? "undo veto" : `⛔ veto (−${vetoCost}c)`}
@@ -175,7 +183,7 @@ export default function VotePhase({ slug, sessionToken, state }: VotePhaseProps)
       </ul>
 
       <div className="actions">
-        <button type="button" onClick={handleSubmit} disabled={submitting || left < 0}>
+        <button type="button" onClick={handleSubmit} disabled={closed || submitting || left < 0}>
           {submitting ? "Submitting…" : submitted ? "Resubmit ballot" : "Submit ballot"}
         </button>
         {left < 0 && <span className="error-banner">over budget by {-left}</span>}

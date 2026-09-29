@@ -58,7 +58,9 @@ export default function App() {
     case "home":
       return <Home />;
     case "room":
-      return <Room slug={route.slug} />;
+      // Keyed by slug so moving between votes (e.g. the next-vote handoff)
+      // mounts a fresh room instead of carrying state across.
+      return <Room key={route.slug} slug={route.slug} />;
     default:
       return <NotFound />;
   }
