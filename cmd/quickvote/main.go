@@ -3,13 +3,17 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/HendersonT/quick-vote/internal/server"
@@ -24,7 +28,7 @@ func main() {
 	addr := flag.String("addr", defaultAddr, "listen address (env QV_ADDR)")
 	dbPath := flag.String("db", defaultDB, "path to the SQLite database file (env QV_DB)")
 	retentionDays := flag.Int("retention-days", envInt("QV_RETENTION_DAYS", 90),
-		"delete votes older than this many days; 0 keeps them forever (env QV_RETENTION_DAYS)")
+		"delete votes after this many days without activity; 0 keeps them forever (env QV_RETENTION_DAYS)")
 	trustedIPHeader := flag.String("trusted-ip-header", os.Getenv("QV_TRUSTED_IP_HEADER"),
 		"header carrying the real client IP from a trusted reverse proxy, e.g. CF-Connecting-IP; "+
 			"only set when the server is reachable solely through that proxy (env QV_TRUSTED_IP_HEADER)")
@@ -42,7 +46,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("quickvote: open store: %v", err)
 	}
-	defer st.Close()
+	// st is closed explicitly at the end of shutdown (after the server stops
+	// touching it), not deferred, so it isn't closed twice.
 
 	srv := server.NewWithConfig(st, webembed.FS(), server.Config{
 		TrustedIPHeader: strings.TrimSpace(*trustedIPHeader),
@@ -55,7 +60,10 @@ func main() {
 		log.Fatalf("quickvote: re-arm timers: %v", err)
 	}
 
-	srv.StartPruning(time.Duration(*retentionDays) * 24 * time.Hour)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	srv.StartBackground(time.Duration(*retentionDays) * 24 * time.Hour)
 
 	httpSrv := &http.Server{
 		Addr:    *addr,
@@ -70,9 +78,28 @@ func main() {
 		MaxHeaderBytes:    16 << 10,
 	}
 
-	log.Printf("quickvote: listening on %s, db at %s", *addr, *dbPath)
-	if err := httpSrv.ListenAndServe(); err != nil {
-		log.Fatalf("quickvote: server error: %v", err)
+	go func() {
+		log.Printf("quickvote: listening on %s, db at %s", *addr, *dbPath)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("quickvote: server error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Printf("quickvote: shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Shutdown drains in-flight HTTP requests but does not wait for hijacked
+	// WebSocket connections; srv.Close() closes those (and stops timers and
+	// background loops) once no handler can still be mutating state.
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("quickvote: http shutdown: %v", err)
+	}
+	srv.Close()
+	// Store.Close checkpoints the WAL, so a clean stop leaves all data in the
+	// main database file.
+	if err := st.Close(); err != nil {
+		log.Printf("quickvote: close store: %v", err)
 	}
 }
 

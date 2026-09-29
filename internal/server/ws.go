@@ -146,6 +146,20 @@ func (h *hub) connsFor(slug string) []*wsConn {
 	return out
 }
 
+// all returns a snapshot slice of every live connection across all rooms,
+// safe to range over after the hub lock is released.
+func (h *hub) all() []*wsConn {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []*wsConn
+	for _, conns := range h.rooms {
+		for c := range conns {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // handleWS implements GET /api/votes/{slug}/ws. The session token is passed
 // as the ?token= query parameter (WebSocket upgrade requests can't carry a
 // custom Authorization header from a browser EventSource-style API); a
@@ -229,7 +243,11 @@ func (s *Server) wsWritePump(c *wsConn) {
 			}
 		case <-c.done:
 			c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
-			_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+			// A normal-closure frame (rather than an empty payload) lets the
+			// client tell a deliberate close — shutdown, prune — from a
+			// dropped network and reconnect accordingly.
+			_ = c.conn.WriteMessage(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, "closing"))
 			return
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait))

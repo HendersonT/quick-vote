@@ -46,24 +46,43 @@ func TestCreateVoteRateLimited(t *testing.T) {
 	}
 }
 
-func TestPruneExpired(t *testing.T) {
-	s := newTestServer(t)
-	_, out := doJSON(t, s, http.MethodPost, "/api/votes", map[string]any{
-		"title": "Old", "creatorName": "A",
-	}, "")
-	slug := out["slug"].(string)
-	doJSON(t, s, http.MethodPost, "/api/votes/"+slug+"/join", map[string]any{"name": "B"}, "")
+// TestPruneUsesLastActivity pins the retention rule to last activity, not
+// creation: a months-old vote that is still in use must survive a prune.
+func TestPruneUsesLastActivity(t *testing.T) {
+	s, fc := newFakeClockServer(t)
+	_, out := doJSON(t, s, http.MethodPost, "/api/votes", map[string]any{"title": "Busy", "creatorName": "A"}, "")
+	busy, busyTok := out["slug"].(string), out["sessionToken"].(string)
+	_, out = doJSON(t, s, http.MethodPost, "/api/votes", map[string]any{"title": "Idle", "creatorName": "B"}, "")
+	idle := out["slug"].(string)
 
-	if n, err := s.PruneExpired(time.Hour); err != nil || n != 0 {
-		t.Fatalf("fresh vote pruned: n=%d err=%v", n, err)
+	fc.Advance(100 * 24 * time.Hour)
+	suggest(t, s, busy, busyTok, "fresh activity") // bumps last_activity via changed()
+
+	n, err := s.PruneExpired(90 * 24 * time.Hour)
+	if err != nil || n != 1 {
+		t.Fatalf("pruned n=%d err=%v, want 1", n, err)
 	}
-	// Negative retention puts the cutoff in the future: everything expires.
-	if n, err := s.PruneExpired(-time.Hour); err != nil || n != 1 {
-		t.Fatalf("expired vote not pruned: n=%d err=%v", n, err)
+	if rec, _ := doJSON(t, s, http.MethodGet, "/api/votes/"+idle, nil, ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("idle vote survived: %d", rec.Code)
 	}
-	rec, _ := doJSON(t, s, http.MethodGet, "/api/votes/"+slug, nil, "")
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("pruned vote still served: status %d", rec.Code)
+	if rec, _ := doJSON(t, s, http.MethodGet, "/api/votes/"+busy, nil, ""); rec.Code != http.StatusOK {
+		t.Fatalf("active vote pruned: %d", rec.Code)
+	}
+}
+
+// TestJoinCountsAsActivity: joining is a mutation like any other, so a vote
+// someone just joined must not be pruned as idle.
+func TestJoinCountsAsActivity(t *testing.T) {
+	s, fc := newFakeClockServer(t)
+	_, out := doJSON(t, s, http.MethodPost, "/api/votes", map[string]any{"title": "Late", "creatorName": "A"}, "")
+	slug := out["slug"].(string)
+
+	fc.Advance(100 * 24 * time.Hour)
+	if rec, _ := doJSON(t, s, http.MethodPost, "/api/votes/"+slug+"/join", map[string]any{"name": "B"}, ""); rec.Code != http.StatusOK {
+		t.Fatalf("join: %d", rec.Code)
+	}
+	if n, err := s.PruneExpired(90 * 24 * time.Hour); err != nil || n != 0 {
+		t.Fatalf("pruned n=%d err=%v, want 0", n, err)
 	}
 }
 

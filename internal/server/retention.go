@@ -26,13 +26,21 @@ func (s *Server) PruneExpired(retention time.Duration) (int, error) {
 	return len(slugs), nil
 }
 
-// StartPruning runs PruneExpired immediately and then once a day for the
-// life of the process. A retention of 0 disables pruning.
-func (s *Server) StartPruning(retention time.Duration) {
-	if retention <= 0 {
-		return
-	}
+// checkpointInterval is how often the WAL is folded back into the main
+// database file, so a crash or hard kill never leaves more than about an
+// hour of writes living only in the -wal file.
+const checkpointInterval = time.Hour
+
+// StartBackground runs the server's maintenance loop until Close: it prunes
+// expired votes immediately and then daily (skipped entirely when retention
+// <= 0, which keeps votes forever) and checkpoints the SQLite WAL hourly.
+// Real tickers are used deliberately — the cadence isn't under test, and
+// PruneExpired itself runs on the injected clock.
+func (s *Server) StartBackground(retention time.Duration) {
 	prune := func() {
+		if retention <= 0 {
+			return
+		}
 		n, err := s.PruneExpired(retention)
 		if err != nil {
 			log.Printf("quickvote: prune expired votes: %v", err)
@@ -42,8 +50,21 @@ func (s *Server) StartPruning(retention time.Duration) {
 	}
 	prune()
 	go func() {
-		for range time.Tick(24 * time.Hour) {
-			prune()
+		pruneTick := time.NewTicker(24 * time.Hour)
+		defer pruneTick.Stop()
+		checkpointTick := time.NewTicker(checkpointInterval)
+		defer checkpointTick.Stop()
+		for {
+			select {
+			case <-s.stop:
+				return
+			case <-pruneTick.C:
+				prune()
+			case <-checkpointTick.C:
+				if err := s.store.Checkpoint(); err != nil {
+					log.Printf("quickvote: wal checkpoint: %v", err)
+				}
+			}
 		}
 	}()
 }

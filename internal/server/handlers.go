@@ -294,6 +294,10 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 
 	state := BuildRoomState(v, parts, opts, ballots, &p)
 
+	// A join changes the participant list others see and counts as activity
+	// for retention, so it goes through the same post-mutation hook.
+	s.changed(slug)
+
 	writeJSON(w, http.StatusOK, joinResponse{SessionToken: sessionToken, State: state})
 }
 

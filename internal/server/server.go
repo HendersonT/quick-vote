@@ -74,6 +74,11 @@ type Server struct {
 	// can't double-score or drop a ballot under concurrent requests.
 	slugMu    sync.Mutex
 	slugLocks map[string]*sync.Mutex
+
+	// stop is closed by Close to end the background prune/checkpoint loop;
+	// closeOnce makes Close idempotent.
+	stop      chan struct{}
+	closeOnce sync.Once
 }
 
 // lockSlug acquires the per-slug mutation lock for slug and returns its unlock
@@ -110,6 +115,7 @@ func NewWithConfig(st *store.Store, staticFS fs.FS, cfg Config) *Server {
 		cfg:       cfg,
 		clock:     cfg.Clock,
 		slugLocks: map[string]*sync.Mutex{},
+		stop:      make(chan struct{}),
 		// Generous enough for a whole party behind one NAT'd IP.
 		writeLimit:   newRateLimiter(120, 500*time.Millisecond),
 		createLimit:  newRateLimiter(10, time.Minute),
@@ -131,11 +137,33 @@ func (s *Server) SetOnChange(fn func(slug string)) {
 	s.onChange = fn
 }
 
-// changed notifies the onChange hook (if any) that slug's state changed.
+// changed is the single post-mutation hook: it records activity on slug
+// (postponing its retention pruning) and notifies the onChange hook (if any)
+// that slug's state changed. Every mutating handler and timer firing funnels
+// through here, so "last activity" can't drift from what users actually did.
 func (s *Server) changed(slug string) {
+	_ = s.store.TouchVote(slug, s.now().Unix())
 	if s.onChange != nil {
 		s.onChange(slug)
 	}
+}
+
+// Close shuts down the server's live state: it stops the background
+// prune/checkpoint loop, cancels every armed phase timer, and closes every
+// WebSocket with a normal close frame. It is idempotent and does not close
+// the store — the caller that opened the store owns it.
+//
+// http.Server.Shutdown does not track hijacked (WebSocket) connections, so
+// callers should Shutdown the HTTP server first and then call Close.
+func (s *Server) Close() {
+	s.closeOnce.Do(func() {
+		close(s.stop)
+		s.scheduler.StopAll()
+		for _, c := range s.hub.all() {
+			s.hub.remove(c)
+			c.close()
+		}
+	})
 }
 
 // ServeHTTP implements http.Handler.

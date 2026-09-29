@@ -57,6 +57,17 @@ func (sc *Scheduler) Clear(slug string) {
 	}
 }
 
+// StopAll cancels and forgets every armed deadline. Used at shutdown; the
+// deadlines stay persisted and RearmTimers restores them on the next start.
+func (sc *Scheduler) StopAll() {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	for slug, t := range sc.timers {
+		t.Stop()
+		delete(sc.timers, slug)
+	}
+}
+
 // timerFired is the Scheduler callback: it advances the phase for slug. If the
 // suggestion timer expires while there are fewer than two options, the phase
 // is held and the deadline is dropped (the creator must resolve it manually).

@@ -52,7 +52,7 @@ Three phases move in order: **suggesting → voting → results**.
 Phase changes and every other update are pushed live over a WebSocket, so all
 open browsers stay in sync.
 
-Votes are stored in SQLite and deleted automatically 90 days after creation
+Votes are stored in SQLite and deleted automatically after 90 days without activity
 (configurable with `QV_RETENTION_DAYS`; `0` keeps them forever). Until then a
 vote's room stays reachable at its `/v/<slug>` link, and each browser also
 keeps a local "recent votes" list (in `localStorage`, not synced anywhere) so
@@ -117,7 +117,7 @@ Flags (with environment-variable fallbacks):
 |---|---|---|---|
 | `-addr` | `QV_ADDR` | `:8080` | Listen address. |
 | `-db` | `QV_DB` | `/data/quickvote.db` | SQLite database file path (its directory is created if missing). |
-| `-retention-days` | `QV_RETENTION_DAYS` | `90` | Delete votes this many days after creation (checked at startup and daily). `0` disables. |
+| `-retention-days` | `QV_RETENTION_DAYS` | `90` | Delete votes after this many days without activity (checked at startup and daily). `0` disables. |
 | `-trusted-ip-header` | `QV_TRUSTED_IP_HEADER` | *(none)* | Header carrying the real client IP from your reverse proxy (`CF-Connecting-IP`, `X-Forwarded-For`, `X-Real-IP`). Rate limits are per client IP, so set this behind a proxy — but **only** if the server can't be reached except through that proxy, or clients can spoof it. |
 | `-allowed-origins` | `QV_ALLOWED_ORIGINS` | *(none)* | Comma-separated extra origins allowed to open WebSockets (the page's own origin is always allowed). |
 
