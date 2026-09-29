@@ -71,9 +71,17 @@ func (sc *Scheduler) StopAll() {
 // timerFired is the Scheduler callback: it advances the phase for slug. If the
 // suggestion timer expires while there are fewer than two options, the phase
 // is held and the deadline is dropped (the creator must resolve it manually).
+//
+// A timer that fired while close was clearing it (the callback was already
+// waiting on the slug lock) must not advance the room, so a closed vote, or
+// one whose stored deadline is gone, is left untouched and not broadcast.
 func (s *Server) timerFired(slug string) {
 	defer s.lockSlug(slug)()
-	err := s.advancePhase(slug, false, "")
+	v, err := s.store.GetVote(slug)
+	if err != nil || v.ClosedAt != nil || v.PhaseDeadline == nil {
+		return
+	}
+	err = s.advancePhase(slug, false, "")
 	if errors.Is(err, errNeedTwoSuggestions) {
 		s.clearDeadline(slug)
 	}

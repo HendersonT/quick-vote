@@ -239,6 +239,9 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	if rejectIfClosed(w, v) {
+		return
+	}
 
 	var req joinRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -401,6 +404,9 @@ func (s *Server) handleCreateSuggestion(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	if rejectIfClosed(w, v) {
+		return
+	}
 	p, ok := s.requireParticipant(w, r, slug)
 	if !ok {
 		return
@@ -483,6 +489,9 @@ func (s *Server) handleDeleteSuggestion(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	if rejectIfClosed(w, v) {
+		return
+	}
 	asCreator := r.Header.Get("X-Creator-Token") != ""
 	var p store.ParticipantRow
 	if asCreator {
@@ -538,6 +547,9 @@ func (s *Server) handlePutBallot(w http.ResponseWriter, r *http.Request) {
 	defer s.lockSlug(slug)()
 	v, ok := s.getVoteOr404(w, slug)
 	if !ok {
+		return
+	}
+	if rejectIfClosed(w, v) {
 		return
 	}
 	p, ok := s.requireParticipant(w, r, slug)
@@ -611,6 +623,9 @@ func (s *Server) handleAdvance(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if rejectIfClosed(w, v) {
+		return
+	}
 	p, ok := s.requireCreator(w, r, v)
 	if !ok {
 		return
@@ -650,6 +665,9 @@ func (s *Server) handleRevote(w http.ResponseWriter, r *http.Request) {
 	defer s.lockSlug(slug)()
 	v, ok := s.getVoteOr404(w, slug)
 	if !ok {
+		return
+	}
+	if rejectIfClosed(w, v) {
 		return
 	}
 	p, ok := s.requireParticipant(w, r, slug)
@@ -723,6 +741,9 @@ func (s *Server) handleDoneSuggesting(w http.ResponseWriter, r *http.Request) {
 	defer s.lockSlug(slug)()
 	v, ok := s.getVoteOr404(w, slug)
 	if !ok {
+		return
+	}
+	if rejectIfClosed(w, v) {
 		return
 	}
 	p, ok := s.requireParticipant(w, r, slug)

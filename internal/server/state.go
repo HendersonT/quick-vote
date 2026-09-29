@@ -121,6 +121,9 @@ func BuildRoomState(v store.VoteRow, parts []store.ParticipantRow, opts []store.
 		// runoff is true iff a runoff round (tiebreaker "runoff") is
 		// currently restricting voting to a subset of options.
 		"runoff": active != nil,
+		// closed is true while the creator has closed the room (spec B3):
+		// every write is rejected until it is reopened.
+		"closed": v.ClosedAt != nil,
 	}
 }
 

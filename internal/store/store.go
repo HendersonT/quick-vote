@@ -250,6 +250,28 @@ func (s *Store) TouchVote(slug string, at int64) error {
 	return nil
 }
 
+// SetClosed sets (closedAt non-nil) or clears (nil) a vote's closed_at
+// marker without touching any other column, so reopening can't clobber
+// fields another code path just wrote. Returns ErrNotFound if the vote does
+// not exist.
+func (s *Store) SetClosed(slug string, closedAt *int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	res, err := s.db.Exec(`UPDATE votes SET closed_at = ? WHERE slug = ?`, closedAt, slug)
+	if err != nil {
+		return fmt.Errorf("set closed: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set closed rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // CreateVote inserts a new vote row. A zero LastActivity defaults to
 // CreatedAt: a brand-new vote was last active when it was created.
 func (s *Store) CreateVote(v VoteRow) error {

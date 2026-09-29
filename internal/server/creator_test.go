@@ -3,6 +3,7 @@ package server_test
 import (
 	"net/http"
 	"testing"
+	"time"
 )
 
 func TestRemoveParticipantWipesAndInvalidates(t *testing.T) {
@@ -211,5 +212,113 @@ func TestCreatorDeleteSuggestionOnlyWhileSuggesting(t *testing.T) {
 	rec, _ := doHdr(t, s, http.MethodDelete, "/api/votes/"+slug+"/suggestions/"+id, nil, aliceTok, ct)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("creator delete during voting: %d, want 409", rec.Code)
+	}
+}
+
+func TestCloseBlocksWritesAndReopenRestores(t *testing.T) {
+	s := newTestServer(t)
+	slug, ct, aliceTok, _ := createVote(t, s, nil)
+	bobTok := join(t, s, slug, "Bob")
+	base := "/api/votes/" + slug
+
+	rec, st := doHdr(t, s, http.MethodPost, base+"/close", nil, aliceTok, ct)
+	if rec.Code != http.StatusOK || st["closed"] != true {
+		t.Fatalf("close: %d closed=%v", rec.Code, st["closed"])
+	}
+	if rec, _ := doHdr(t, s, http.MethodPost, base+"/close", nil, aliceTok, ct); rec.Code != http.StatusOK {
+		t.Fatalf("close is idempotent: %d", rec.Code)
+	}
+	blocked := []struct {
+		method, path string
+		body         any
+		tok, ct      string
+	}{
+		{http.MethodPost, base + "/join", map[string]any{"name": "Carol"}, "", ""},
+		{http.MethodPost, base + "/suggestions", map[string]any{"title": "x"}, bobTok, ""},
+		{http.MethodPost, base + "/done-suggesting", map[string]any{}, bobTok, ""},
+		{http.MethodPost, base + "/advance", map[string]any{}, aliceTok, ct},
+	}
+	for _, b := range blocked {
+		if rec, _ := doHdr(t, s, b.method, b.path, b.body, b.tok, b.ct); rec.Code != http.StatusConflict {
+			t.Errorf("%s %s while closed: %d, want 409", b.method, b.path, rec.Code)
+		}
+	}
+	if rec, _ := doJSON(t, s, http.MethodGet, base, nil, ""); rec.Code != http.StatusOK {
+		t.Fatalf("GET while closed: %d", rec.Code)
+	}
+	if rec, _ := doHdr(t, s, http.MethodPost, base+"/close", nil, bobTok, ct); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-creator close: %d, want 403", rec.Code)
+	}
+	if rec, _ := doHdr(t, s, http.MethodPost, base+"/reopen", nil, bobTok, ct); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-creator reopen: %d, want 403", rec.Code)
+	}
+
+	rec, st = doHdr(t, s, http.MethodPost, base+"/reopen", nil, aliceTok, ct)
+	if rec.Code != http.StatusOK || st["closed"] != false {
+		t.Fatalf("reopen: %d closed=%v", rec.Code, st["closed"])
+	}
+	if rec, _ := doHdr(t, s, http.MethodPost, base+"/reopen", nil, aliceTok, ct); rec.Code != http.StatusOK {
+		t.Fatalf("reopen of an open vote is a no-op 200: %d", rec.Code)
+	}
+	if rec, _ := suggest(t, s, slug, bobTok, "after reopen"); rec.Code != http.StatusOK {
+		t.Fatalf("suggest after reopen: %d", rec.Code)
+	}
+}
+
+func TestClosedVoteTimerDoesNotAdvance(t *testing.T) {
+	s, fc := newFakeClockServer(t)
+	slug, ct, aliceTok, _ := createVote(t, s, map[string]any{"suggestTimerSecs": 60})
+	suggest(t, s, slug, aliceTok, "A")
+	suggest(t, s, slug, aliceTok, "B")
+	doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/close", nil, aliceTok, ct)
+
+	fc.Advance(2 * time.Minute)
+	st := getState(t, s, slug, aliceTok)
+	if st["phase"] != "suggesting" || st["phaseDeadline"] != nil {
+		t.Fatalf("closed vote changed on timer: phase=%v deadline=%v", st["phase"], st["phaseDeadline"])
+	}
+	doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/reopen", nil, aliceTok, ct)
+	fc.Advance(2 * time.Minute)
+	if st := getState(t, s, slug, aliceTok); st["phase"] != "suggesting" {
+		t.Fatalf("reopen must not re-arm the timer: phase=%v", st["phase"])
+	}
+}
+
+func TestCloseBlocksVotingAndResultsWrites(t *testing.T) {
+	s := newTestServer(t)
+	slug, ct, aliceTok, _ := createVote(t, s, map[string]any{"suggestAdvanceMode": "manual", "voteAdvanceMode": "manual"})
+	bobTok := join(t, s, slug, "Bob")
+	_, st := suggest(t, s, slug, aliceTok, "A")
+	suggest(t, s, slug, aliceTok, "B")
+	optA := optionTitleToID(t, st)["A"]
+	base := "/api/votes/" + slug
+	bobID := participantID(t, getState(t, s, slug, bobTok))
+
+	// Suggest phase: deleting a suggestion is blocked while closed.
+	doHdr(t, s, http.MethodPost, base+"/close", nil, aliceTok, ct)
+	if rec, _ := doHdr(t, s, http.MethodDelete, base+"/suggestions/"+optA, nil, aliceTok, ""); rec.Code != http.StatusConflict {
+		t.Fatalf("delete suggestion while closed: %d, want 409", rec.Code)
+	}
+	if rec, _ := doHdr(t, s, http.MethodDelete, base+"/participants/"+bobID, nil, aliceTok, ct); rec.Code != http.StatusConflict {
+		t.Fatalf("remove participant while closed: %d, want 409", rec.Code)
+	}
+	doHdr(t, s, http.MethodPost, base+"/reopen", nil, aliceTok, ct)
+
+	// Voting phase: ballots blocked.
+	doHdr(t, s, http.MethodPost, base+"/advance", map[string]any{}, aliceTok, ct)
+	doHdr(t, s, http.MethodPost, base+"/close", nil, aliceTok, ct)
+	if rec, _ := putBallot(t, s, slug, bobTok, map[string]int{optA: 1}); rec.Code != http.StatusConflict {
+		t.Fatalf("ballot while closed: %d, want 409", rec.Code)
+	}
+	doHdr(t, s, http.MethodPost, base+"/reopen", nil, aliceTok, ct)
+
+	// Results phase: re-vote calls blocked.
+	doHdr(t, s, http.MethodPost, base+"/advance", map[string]any{}, aliceTok, ct)
+	if st := getState(t, s, slug, aliceTok); st["phase"] != "results" {
+		t.Fatalf("setup: phase=%v, want results", st["phase"])
+	}
+	doHdr(t, s, http.MethodPost, base+"/close", nil, aliceTok, ct)
+	if rec, _ := doHdr(t, s, http.MethodPost, base+"/revote", map[string]any{}, bobTok, ""); rec.Code != http.StatusConflict {
+		t.Fatalf("revote while closed: %d, want 409", rec.Code)
 	}
 }

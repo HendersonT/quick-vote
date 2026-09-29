@@ -915,3 +915,26 @@ func TestRemoveParticipantKeepsOptionsWhenAsked(t *testing.T) {
 		t.Fatalf("options must be kept, got %+v, %v", opts, err)
 	}
 }
+
+func TestSetClosed(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.CreateVote(VoteRow{Slug: "a", Title: "A", Phase: "suggesting", Settings: "{}", CreatorToken: "c", CreatedAt: 10}); err != nil {
+		t.Fatal(err)
+	}
+	at := int64(77)
+	if err := st.SetClosed("a", &at); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := st.GetVote("a"); v.ClosedAt == nil || *v.ClosedAt != 77 {
+		t.Fatalf("ClosedAt = %v, want 77", v.ClosedAt)
+	}
+	if err := st.SetClosed("a", nil); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := st.GetVote("a"); v.ClosedAt != nil {
+		t.Fatalf("ClosedAt = %v, want nil after reopen", *v.ClosedAt)
+	}
+	if err := st.SetClosed("missing", &at); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetClosed(missing) = %v, want ErrNotFound", err)
+	}
+}
