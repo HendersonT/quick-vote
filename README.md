@@ -75,8 +75,9 @@ open browsers stay in sync.
 The creator can also, at any time:
 
 - **Remove a participant** — their suggestions (during the suggesting phase)
-  and ballot are wiped and their session stops working; their browser drops
-  to a read-only view with a "no longer in this vote" notice.
+  and ballot are wiped and their session stops working; their browser returns
+  to the join screen with a "no longer in this vote" notice, from which they
+  can join again as a new participant while the vote is open.
 - **Delete any suggestion** during the suggesting phase (everyone else can
   delete only their own).
 - **Close the vote** — the room becomes read-only for everyone, including the
@@ -84,8 +85,13 @@ The creator can also, at any time:
   the timer does not come back, so the phase continues under manual control.
 - **Start another vote with the same group** — creates a follow-up vote
   (same settings by default) with every current participant already in it.
-  Open browsers move to the new room automatically, once; anyone returning to
-  the old link later sees a banner pointing to the new vote instead.
+  Each carried-over participant's browser follows once: immediately if it has
+  the room open, otherwise on its next visit to the old vote. After that, and
+  for everyone else (spectators, people who join the old vote later), the
+  old room shows a banner linking to the new vote. Removing someone from the
+  old vote after the handoff doesn't remove their seat in the new one (remove
+  them there too if needed); it only stops a browser that hadn't followed yet
+  from following.
 
 ### Sharing
 
@@ -141,8 +147,9 @@ creator-only endpoints additionally require `X-Creator-Token: <creatorToken>`
 **and** the creator's own session. Errors are `{"error": "..."}` with 400
 (validation), 401 (missing/invalid session), 403 (wrong creator token), 404
 (unknown vote, participant or option), 409 (wrong phase, vote closed, or
-state conflict), or 429 (rate limited). Every write to a closed vote returns
-409 until it is reopened.
+state conflict), or 429 (rate limited). Close and reopen work whether or not
+the vote is already closed (both are idempotent); every other write to a closed
+vote returns 409 until the creator reopens it.
 
 | Method | Path | Who | Purpose |
 |---|---|---|---|
@@ -164,9 +171,12 @@ state conflict), or 429 (rate limited). Every write to a closed vote returns
 
 Room state includes `closed` (bool), `next` (`{slug, title}` of the follow-up
 vote, or `null`), and, for the requesting participant, `you.nextSessionToken`
-(plus `you.nextCreatorToken` for the creator) so a browser can move into the
-follow-up vote without re-joining. Other participants' ballots are never
-included — only your own, as `you.ballot`.
+so a browser can move into the follow-up vote without re-joining. The creator
+also gets `you.nextCreatorToken`, but only when the request carries the
+creator token too (`X-Creator-Token`, or `creatorToken` in the WebSocket auth
+message): a creator session alone isn't enough to hand out a creator token.
+Other participants' ballots are never included — only your own, as
+`you.ballot`.
 
 ### WebSocket
 
@@ -174,13 +184,15 @@ Connect to `/api/votes/{slug}/ws`, then send an auth message as the **first**
 message:
 
 ```json
-{"type": "auth", "token": "<sessionToken>"}
+{"type": "auth", "token": "<sessionToken>", "creatorToken": "<creatorToken>"}
 ```
 
-An empty or unknown token connects you as a spectator. Tokens go in this
-message rather than the URL so they never end up in proxy or tunnel access
-logs. A connection that doesn't send a valid auth message within 5 seconds is
-closed with code 1008 (policy violation). After auth, the server pushes your
+`creatorToken` is optional: the creator's browser sends it so its snapshots
+can include `you.nextCreatorToken`; everyone else leaves it out. An empty or
+unknown `token` connects you as a spectator. Tokens go in this message rather
+than the URL so they never end up in proxy or tunnel access logs. A
+connection that doesn't send a valid auth message within 5 seconds is closed
+with code 1008 (policy violation). After auth, the server pushes your
 personalized room state as a JSON text message immediately and again after
 every change.
 
@@ -192,9 +204,9 @@ Backend (Go 1.23+; the Docker build uses 1.27):
 go run ./cmd/quickvote -addr :8080 -db ./quickvote.db
 ```
 
-Frontend (Node 22+), with a dev server that proxies `/api` (including the
-WebSocket) to the Go backend on `:8080`. WebSockets are same-origin only, so
-start the backend with the dev server's origin allowed:
+Frontend (Node 22.12+ or 24 LTS), with a dev server that proxies `/api`
+(including the WebSocket) to the Go backend on `:8080`. WebSockets are
+same-origin only, so start the backend with the dev server's origin allowed:
 
 ```sh
 QV_ALLOWED_ORIGINS=http://localhost:5173 go run ./cmd/quickvote -db ./quickvote.db
@@ -232,6 +244,11 @@ limits sized so a group sharing one IP (same Wi-Fi) won't hit them:
 - Participants: 100 per vote.
 - Live-update WebSockets: 200 per vote, 50 per IP.
 - Request bodies: 64 KiB. HTTP read/write timeouts guard against slow clients.
+
+Public reads — room state (`GET /api/votes/{slug}`), `results.csv`, and the
+results page — are deliberately not rate-limited: they're cheap, and a
+results link may be opened by many people behind one IP. Only writes and
+WebSocket connections are throttled.
 
 Responses carry a strict Content-Security-Policy, `X-Frame-Options: DENY`, and
 `Referrer-Policy: no-referrer` (room links are the only access control, so
