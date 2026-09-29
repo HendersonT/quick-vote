@@ -193,6 +193,7 @@ func (s *Server) routes() chi.Router {
 			r.With(write...).Put("/ballot", s.handlePutBallot)
 			r.With(write...).Post("/advance", s.handleAdvance)
 			r.With(write...).Post("/revote", s.handleRevote)
+			r.With(write...).Delete("/participants/{id}", s.handleRemoveParticipant)
 			r.With(s.limit(s.writeLimit, nil)).Get("/ws", s.handleWS)
 		})
 	})

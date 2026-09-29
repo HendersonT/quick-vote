@@ -1,7 +1,6 @@
 package server
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -581,8 +580,8 @@ type advanceRequest struct {
 	WinnerOptionID string `json:"winnerOptionId"`
 }
 
-// handleAdvance implements POST /api/votes/{slug}/advance. It requires both a
-// valid session token and a matching X-Creator-Token header.
+// handleAdvance implements POST /api/votes/{slug}/advance. It requires the
+// creator's session and a matching X-Creator-Token header (requireCreator).
 func (s *Server) handleAdvance(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
 	defer s.lockSlug(slug)()
@@ -590,12 +589,8 @@ func (s *Server) handleAdvance(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	p, ok := s.requireParticipant(w, r, slug)
+	p, ok := s.requireCreator(w, r, v)
 	if !ok {
-		return
-	}
-	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Creator-Token")), []byte(v.CreatorToken)) != 1 {
-		writeError(w, http.StatusForbidden, "creator token required")
 		return
 	}
 

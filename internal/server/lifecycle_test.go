@@ -96,6 +96,17 @@ func optionTitleToID(t *testing.T, state map[string]any) map[string]string {
 	return m
 }
 
+// participantID returns the requester's own participant id from a
+// personalized state snapshot.
+func participantID(t *testing.T, state map[string]any) string {
+	t.Helper()
+	you, ok := state["you"].(map[string]any)
+	if !ok {
+		t.Fatalf("state has no \"you\": %v", state["you"])
+	}
+	return you["participantId"].(string)
+}
+
 func putBallot(t *testing.T, s *server.Server, slug, token string, votes map[string]int) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()
 	return doJSON(t, s, http.MethodPut, "/api/votes/"+slug+"/ballot", map[string]any{"votes": votes}, token)

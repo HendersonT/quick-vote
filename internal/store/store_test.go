@@ -814,3 +814,90 @@ func TestQueryCountCountsReads(t *testing.T) {
 		t.Fatalf("QueryCount delta = %d, want 5", got)
 	}
 }
+
+func TestRemoveParticipantStore(t *testing.T) {
+	st := openTestStore(t)
+
+	if err := st.CreateVote(VoteRow{Slug: "v", Title: "T", Phase: "suggesting", Settings: "{}", CreatorToken: "ct", CreatedAt: 1}); err != nil {
+		t.Fatalf("CreateVote: %v", err)
+	}
+	for _, p := range []ParticipantRow{
+		{ID: "p1", VoteSlug: "v", Name: "Alice", Token: "tok1", IsCreator: true, JoinedAt: 1},
+		{ID: "p2", VoteSlug: "v", Name: "Bob", Token: "tok2", JoinedAt: 2},
+	} {
+		if err := st.AddParticipant(p); err != nil {
+			t.Fatalf("AddParticipant: %v", err)
+		}
+	}
+	if err := st.AddOption(OptionRow{ID: "o1", VoteSlug: "v", ParticipantID: "p2", Title: "Bob's", CreatedAt: 3}); err != nil {
+		t.Fatalf("AddOption: %v", err)
+	}
+	if err := st.AddOption(OptionRow{ID: "o2", VoteSlug: "v", ParticipantID: "p1", Title: "Alice's", CreatedAt: 4}); err != nil {
+		t.Fatalf("AddOption: %v", err)
+	}
+	if err := st.PutBallot("v", "p2", `{"o2":1}`); err != nil {
+		t.Fatalf("PutBallot: %v", err)
+	}
+	if err := st.SetDoneSuggesting("p2", true); err != nil {
+		t.Fatalf("SetDoneSuggesting: %v", err)
+	}
+
+	if err := st.RemoveParticipant("v", "p1", "fresh1", false, 10); !errors.Is(err, ErrIsCreator) {
+		t.Fatalf("removing creator: got %v, want ErrIsCreator", err)
+	}
+	if err := st.RemoveParticipant("v", "nope", "fresh2", false, 10); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown participant: got %v, want ErrNotFound", err)
+	}
+	if err := st.RemoveParticipant("other", "p2", "fresh3", false, 10); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("participant of another vote: got %v, want ErrNotFound", err)
+	}
+
+	if err := st.RemoveParticipant("v", "p2", "fresh4", true, 10); err != nil {
+		t.Fatalf("RemoveParticipant: %v", err)
+	}
+	if _, err := st.ParticipantByToken("v", "tok2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old token still resolves: %v", err)
+	}
+	if _, err := st.ParticipantByToken("v", "fresh4"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("removed participant's new token must not resolve either: %v", err)
+	}
+	parts, err := st.Participants("v")
+	if err != nil || len(parts) != 1 || parts[0].ID != "p1" {
+		t.Fatalf("Participants after remove = %+v, %v", parts, err)
+	}
+	ballots, err := st.Ballots("v")
+	if err != nil {
+		t.Fatalf("Ballots: %v", err)
+	}
+	if _, ok := ballots["p2"]; ok {
+		t.Fatal("removed participant's ballot must be deleted")
+	}
+	opts, err := st.Options("v")
+	if err != nil || len(opts) != 1 || opts[0].ID != "o2" {
+		t.Fatalf("options after remove with deleteOptions = %+v, %v", opts, err)
+	}
+
+	if err := st.RemoveParticipant("v", "p2", "fresh5", true, 11); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second removal: got %v, want ErrNotFound", err)
+	}
+}
+
+func TestRemoveParticipantKeepsOptionsWhenAsked(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.CreateVote(VoteRow{Slug: "v", Title: "T", Phase: "voting", Settings: "{}", CreatorToken: "ct", CreatedAt: 1}); err != nil {
+		t.Fatalf("CreateVote: %v", err)
+	}
+	if err := st.AddParticipant(ParticipantRow{ID: "p2", VoteSlug: "v", Name: "Bob", Token: "tok2", JoinedAt: 2}); err != nil {
+		t.Fatalf("AddParticipant: %v", err)
+	}
+	if err := st.AddOption(OptionRow{ID: "o1", VoteSlug: "v", ParticipantID: "p2", Title: "Bob's", CreatedAt: 3}); err != nil {
+		t.Fatalf("AddOption: %v", err)
+	}
+	if err := st.RemoveParticipant("v", "p2", "fresh", false, 10); err != nil {
+		t.Fatalf("RemoveParticipant: %v", err)
+	}
+	opts, err := st.Options("v")
+	if err != nil || len(opts) != 1 {
+		t.Fatalf("options must be kept, got %+v, %v", opts, err)
+	}
+}

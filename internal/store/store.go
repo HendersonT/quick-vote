@@ -16,6 +16,11 @@ import (
 // ErrNotFound is returned when a lookup does not match any row.
 var ErrNotFound = errors.New("not found")
 
+// ErrIsCreator is returned by RemoveParticipant when asked to remove the
+// vote's creator: the creator is the only one who can moderate the room, so
+// removing them would leave it unmanageable.
+var ErrIsCreator = errors.New("cannot remove the creator")
+
 const schema = `
 CREATE TABLE IF NOT EXISTS votes (
   slug TEXT PRIMARY KEY, title TEXT NOT NULL,
@@ -362,6 +367,62 @@ func (s *Store) AddParticipant(p ParticipantRow) error {
 	)
 	if err != nil {
 		return fmt.Errorf("add participant: %w", err)
+	}
+	return nil
+}
+
+// RemoveParticipant soft-deletes a participant of slug in one transaction:
+// their ballot is deleted, their suggestions too when deleteOptions is set
+// (the caller decides by phase — once voting has started, others may have
+// spent credits on those options), and the row is marked removed with its
+// session token replaced by newToken. newToken is never handed to anyone, so
+// the old token stops authenticating immediately. The row itself stays so
+// options kept after removal still have a valid participant_id.
+//
+// Returns ErrNotFound if the participant is not a current (non-removed)
+// member of slug, and ErrIsCreator for the creator.
+func (s *Store) RemoveParticipant(slug, participantID, newToken string, deleteOptions bool, at int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin remove participant: %w", err)
+	}
+	defer tx.Rollback()
+
+	var isCreator int
+	err = tx.QueryRow(
+		`SELECT is_creator FROM participants WHERE id = ? AND vote_slug = ? AND removed_at IS NULL`,
+		participantID, slug,
+	).Scan(&isCreator)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lookup participant: %w", err)
+	}
+	if isCreator != 0 {
+		return ErrIsCreator
+	}
+
+	if _, err := tx.Exec(`DELETE FROM ballots WHERE vote_slug = ? AND participant_id = ?`, slug, participantID); err != nil {
+		return fmt.Errorf("delete removed participant's ballot: %w", err)
+	}
+	if deleteOptions {
+		if _, err := tx.Exec(`DELETE FROM options WHERE vote_slug = ? AND participant_id = ?`, slug, participantID); err != nil {
+			return fmt.Errorf("delete removed participant's options: %w", err)
+		}
+	}
+	if _, err := tx.Exec(
+		`UPDATE participants SET removed_at = ?, token = ?, wants_revote = 0, done_suggesting = 0, next_token = NULL
+		 WHERE id = ?`,
+		at, newToken, participantID,
+	); err != nil {
+		return fmt.Errorf("mark participant removed: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit remove participant: %w", err)
 	}
 	return nil
 }
