@@ -59,13 +59,14 @@ func (d roomData) requester(token string) *store.ParticipantRow {
 }
 
 // stateFor builds the room state personalized for the session token (a
-// spectator view when the token is empty or unknown).
-func (d roomData) stateFor(token string) map[string]any {
-	return d.stateForParticipant(d.requester(token))
+// spectator view when the token is empty or unknown). creatorTokenOK: the
+// caller also presented the vote's creator token (see BuildRoomState).
+func (d roomData) stateFor(token string, creatorTokenOK bool) map[string]any {
+	return d.stateForParticipant(d.requester(token), creatorTokenOK)
 }
 
 // stateForParticipant builds the room state personalized for p (nil =
 // spectator).
-func (d roomData) stateForParticipant(p *store.ParticipantRow) map[string]any {
-	return BuildRoomState(d.vote, d.parts, d.opts, d.ballots, p)
+func (d roomData) stateForParticipant(p *store.ParticipantRow, creatorTokenOK bool) map[string]any {
+	return BuildRoomState(d.vote, d.parts, d.opts, d.ballots, p, creatorTokenOK)
 }

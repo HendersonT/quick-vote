@@ -13,13 +13,15 @@ import (
 // "Shared contract: room-state snapshot" section) for a single requester.
 // requester is nil when the caller is a spectator (not joined, or presented
 // no/an invalid session token) — in that case "you" is null in the result.
+// creatorTokenOK reports that the caller also presented this vote's creator
+// token; see the handoff credentials below for what it unlocks.
 //
 // It panics if the vote's stored settings or results JSON is malformed;
 // that data is only ever written by this package, so corruption indicates a
 // programming error rather than bad user input. Callers should run behind a
 // panic-recovering middleware.
 func BuildRoomState(v store.VoteRow, parts []store.ParticipantRow, opts []store.OptionRow,
-	ballots map[string]map[string]int, requester *store.ParticipantRow) map[string]any {
+	ballots map[string]map[string]int, requester *store.ParticipantRow, creatorTokenOK bool) map[string]any {
 
 	var settings domain.Settings
 	if err := json.Unmarshal([]byte(v.Settings), &settings); err != nil {
@@ -91,10 +93,12 @@ func BuildRoomState(v store.VoteRow, parts []store.ParticipantRow, opts []store.
 		}
 		// Handoff credentials for the successor vote (spec B4) go only to
 		// the participant they belong to: their own new session token, and
-		// the new creator token only to this vote's creator.
+		// the new creator token only to this vote's creator. The latter is a
+		// creator power, so like every other one it takes the creator token
+		// too, not the creator's session alone.
 		if hasNext && requester.NextToken != nil {
 			y["nextSessionToken"] = *requester.NextToken
-			if requester.IsCreator && v.NextCreatorToken != nil {
+			if requester.IsCreator && creatorTokenOK && v.NextCreatorToken != nil {
 				y["nextCreatorToken"] = *v.NextCreatorToken
 			}
 		}

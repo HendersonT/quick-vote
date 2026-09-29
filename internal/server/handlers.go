@@ -182,7 +182,8 @@ func (s *Server) handleCreateVote(w http.ResponseWriter, r *http.Request) {
 
 	s.armOrClear(slug, deadline)
 
-	state := BuildRoomState(v, []store.ParticipantRow{p}, nil, map[string]map[string]int{}, &p)
+	// The creator holds the creator token (it is in this response).
+	state := BuildRoomState(v, []store.ParticipantRow{p}, nil, map[string]map[string]int{}, &p, true)
 
 	writeJSON(w, http.StatusCreated, createVoteResponse{
 		Slug:         slug,
@@ -311,7 +312,8 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	}
 	parts := append(existing, p)
 
-	state := BuildRoomState(v, parts, opts, ballots, &p)
+	// A joiner is never the creator.
+	state := BuildRoomState(v, parts, opts, ballots, &p, false)
 
 	// A join changes the participant list others see and counts as activity
 	// for retention, so it goes through the same post-mutation hook.
@@ -340,7 +342,8 @@ func dedupeName(name string, existing []store.ParticipantRow) string {
 
 // handleGetVote implements GET /api/votes/{slug}. The Authorization Bearer
 // token is optional; a missing or invalid token yields a spectator snapshot
-// ("you": null) rather than an error.
+// ("you": null) rather than an error. The creator's snapshot carries creator
+// secrets only when X-Creator-Token is presented too (see BuildRoomState).
 func (s *Server) handleGetVote(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
 	d, err := s.loadRoom(slug)
@@ -352,7 +355,7 @@ func (s *Server) handleGetVote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusOK, d.stateFor(bearerToken(r)))
+	writeJSON(w, http.StatusOK, d.stateFor(bearerToken(r), creatorTokenValid(r.Header.Get("X-Creator-Token"), d.vote)))
 }
 
 // getVoteOr404 loads a vote, writing a 404/500 error response and returning
@@ -399,14 +402,16 @@ func parseSettings(v store.VoteRow) (domain.Settings, error) {
 }
 
 // writeState reloads the full room state for slug and writes it as a 200
-// response, personalized for requester (nil = spectator).
-func (s *Server) writeState(w http.ResponseWriter, slug string, requester *store.ParticipantRow) {
+// response, personalized for requester (nil = spectator). Creator secrets are
+// included only when r also carries a valid X-Creator-Token, checked here so
+// no caller can forget it.
+func (s *Server) writeState(w http.ResponseWriter, r *http.Request, slug string, requester *store.ParticipantRow) {
 	d, err := s.loadRoom(slug)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusOK, d.stateForParticipant(requester))
+	writeJSON(w, http.StatusOK, d.stateForParticipant(requester, creatorTokenValid(r.Header.Get("X-Creator-Token"), d.vote)))
 }
 
 type suggestionRequest struct {
@@ -487,7 +492,7 @@ func (s *Server) handleCreateSuggestion(w http.ResponseWriter, r *http.Request) 
 
 	s.maybeAutoAdvanceSuggest(slug, settings)
 	s.changed(slug)
-	s.writeState(w, slug, &p)
+	s.writeState(w, r, slug, &p)
 }
 
 // handleDeleteSuggestion implements DELETE
@@ -551,7 +556,7 @@ func (s *Server) handleDeleteSuggestion(w http.ResponseWriter, r *http.Request) 
 		s.maybeAutoAdvanceSuggest(slug, settings)
 	}
 	s.changed(slug)
-	s.writeState(w, slug, &p)
+	s.writeState(w, r, slug, &p)
 }
 
 type ballotRequest struct {
@@ -624,7 +629,7 @@ func (s *Server) handlePutBallot(w http.ResponseWriter, r *http.Request) {
 
 	s.maybeAutoAdvanceVote(slug, settings)
 	s.changed(slug)
-	s.writeState(w, slug, &p)
+	s.writeState(w, r, slug, &p)
 }
 
 type advanceRequest struct {
@@ -671,7 +676,7 @@ func (s *Server) handleAdvance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.changed(slug)
-	s.writeState(w, slug, &p)
+	s.writeState(w, r, slug, &p)
 }
 
 // handleRevote implements POST /api/votes/{slug}/revote. It toggles the
@@ -745,7 +750,7 @@ func (s *Server) handleRevote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.changed(slug)
-	s.writeState(w, slug, &p)
+	s.writeState(w, r, slug, &p)
 }
 
 // handleDoneSuggesting implements POST /api/votes/{slug}/done-suggesting: it
@@ -781,7 +786,7 @@ func (s *Server) handleDoneSuggesting(w http.ResponseWriter, r *http.Request) {
 		s.maybeAutoAdvanceSuggest(slug, settings)
 	}
 	s.changed(slug)
-	s.writeState(w, slug, &p)
+	s.writeState(w, r, slug, &p)
 }
 
 // maybeAutoAdvanceSuggest advances suggesting -> voting when the configured

@@ -51,6 +51,12 @@ type wsConn struct {
 	ip        string // client IP, for the per-IP connection cap
 	done      chan struct{}
 	closeOnce sync.Once
+
+	// creator is set when the auth message also carried the vote's valid
+	// creator token, which the creator's snapshot needs for creator secrets
+	// (see BuildRoomState). Set before the connection joins the hub and
+	// never changed, so broadcasts read it without locking.
+	creator bool
 }
 
 // close signals that the connection is finished. It is safe to call from any
@@ -183,8 +189,9 @@ func (h *hub) all() []*wsConn {
 }
 
 // handleWS implements GET /api/votes/{slug}/ws. After the upgrade the
-// client must send {"type":"auth","token":"..."} as its first message (see
-// wsAuth); an empty or invalid token connects the caller as a spectator. On
+// client must send {"type":"auth","token":"...","creatorToken":"..."} as its
+// first message (see wsAuth); an empty or invalid token connects the caller
+// as a spectator, and creatorToken is optional. On
 // auth and on every subsequent room change, the caller's personalized
 // snapshot is pushed as a single JSON text message.
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -233,8 +240,9 @@ func (s *Server) wsAuth(c *wsConn) {
 	c.conn.SetReadLimit(4096)
 	_ = c.conn.SetReadDeadline(time.Now().Add(s.wsAuthTimeout()))
 	var msg struct {
-		Type  string `json:"type"`
-		Token string `json:"token"`
+		Type         string `json:"type"`
+		Token        string `json:"token"`
+		CreatorToken string `json:"creatorToken"`
 	}
 	if err := c.conn.ReadJSON(&msg); err != nil || msg.Type != "auth" {
 		_ = c.conn.WriteControl(websocket.CloseMessage,
@@ -245,6 +253,11 @@ func (s *Server) wsAuth(c *wsConn) {
 		return
 	}
 	c.token = msg.Token
+	if msg.CreatorToken != "" {
+		if v, err := s.store.GetVote(c.slug); err == nil {
+			c.creator = creatorTokenValid(msg.CreatorToken, v)
+		}
+	}
 	s.hub.add(c)
 	go s.wsWritePump(c)
 	// Close may have swept the hub while this connection was still pending.
@@ -322,7 +335,7 @@ func (s *Server) pushSnapshot(c *wsConn) {
 	if err != nil {
 		return
 	}
-	data, err := json.Marshal(d.stateFor(c.token))
+	data, err := json.Marshal(d.stateFor(c.token, c.creator))
 	if err != nil {
 		return
 	}
@@ -359,7 +372,7 @@ func (s *Server) broadcast(slug string) {
 		return
 	}
 	for _, c := range conns {
-		data, err := json.Marshal(d.stateFor(c.token))
+		data, err := json.Marshal(d.stateFor(c.token, c.creator))
 		if err != nil {
 			continue
 		}

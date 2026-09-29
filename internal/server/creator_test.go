@@ -374,7 +374,8 @@ func TestNextVoteCarriesGroupWithFreshTokens(t *testing.T) {
 	if got := getState(t, s, next, bobTok); got["you"] != nil {
 		t.Fatal("old token must not authenticate in the new vote")
 	}
-	aliceYou := getState(t, s, slug, aliceTok)["you"].(map[string]any)
+	_, aliceOld := doHdr(t, s, http.MethodGet, "/api/votes/"+slug, nil, aliceTok, ct)
+	aliceYou := aliceOld["you"].(map[string]any)
 	if aliceYou["nextCreatorToken"] != out["creatorToken"] || aliceYou["nextSessionToken"] != out["sessionToken"] {
 		t.Fatalf("creator's old-vote handoff = %v, want response tokens", aliceYou)
 	}
@@ -550,5 +551,85 @@ func TestNextVoteOverDanglingLink(t *testing.T) {
 	}
 	if next, _ := getState(t, s, slug, bobTok)["next"].(map[string]any); next == nil || next["slug"] != out["slug"] {
 		t.Fatalf("source next = %v, want %v", next, out["slug"])
+	}
+}
+
+// startNext creates a vote (Alice creator, Bob) and a follow-up of it,
+// returning the source slug, its creator and session tokens, and the
+// successor's creator token.
+func startNext(t *testing.T, s *server.Server) (slug, ct, aliceTok, nextCT string) {
+	t.Helper()
+	slug, ct, aliceTok, _ = createVote(t, s, nil)
+	join(t, s, slug, "Bob")
+	rec, out := doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/next", map[string]any{"title": "R2"}, aliceTok, ct)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("next: %d %s", rec.Code, rec.Body.String())
+	}
+	return slug, ct, aliceTok, out["creatorToken"].(string)
+}
+
+// TestNextCreatorTokenNeedsCreatorToken: the successor's creator token is a
+// creator power, so like every other creator power it needs the creator
+// token as well as the creator's session; a leaked session alone must not
+// hand it out. The session-only handoff token is unaffected.
+func TestNextCreatorTokenNeedsCreatorToken(t *testing.T) {
+	s := newTestServer(t)
+	slug, ct, aliceTok, nextCT := startNext(t, s)
+	get := func(creatorTok string) map[string]any {
+		t.Helper()
+		rec, st := doHdr(t, s, http.MethodGet, "/api/votes/"+slug, nil, aliceTok, creatorTok)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get: %d", rec.Code)
+		}
+		return st["you"].(map[string]any)
+	}
+
+	for _, bad := range []string{"", "wrong"} {
+		you := get(bad)
+		if _, ok := you["nextCreatorToken"]; ok {
+			t.Fatalf("X-Creator-Token %q: nextCreatorToken sent on the session alone", bad)
+		}
+		if you["nextSessionToken"] == nil {
+			t.Fatalf("X-Creator-Token %q: nextSessionToken must stay session-only", bad)
+		}
+	}
+	if you := get(ct); you["nextCreatorToken"] != nextCT {
+		t.Fatalf("with creator token: nextCreatorToken = %v, want %s", you["nextCreatorToken"], nextCT)
+	}
+
+	// Mutation responses (writeState) follow the same rule.
+	done := "/api/votes/" + slug + "/done-suggesting"
+	if _, st := doHdr(t, s, http.MethodPost, done, map[string]any{}, aliceTok, ""); st["you"].(map[string]any)["nextCreatorToken"] != nil {
+		t.Fatal("mutation response without creator token carried nextCreatorToken")
+	}
+	if _, st := doHdr(t, s, http.MethodPost, done, map[string]any{}, aliceTok, ct); st["you"].(map[string]any)["nextCreatorToken"] != nextCT {
+		t.Fatalf("mutation response with creator token: you = %v", st["you"])
+	}
+}
+
+func TestWebSocketNextCreatorTokenNeedsCreatorToken(t *testing.T) {
+	s, ts := newWSTestServer(t)
+	slug, ct, aliceTok, nextCT := startNext(t, s)
+
+	for _, c := range []struct {
+		creatorTok string
+		want       any
+	}{{"", nil}, {"wrong", nil}, {ct, nextCT}} {
+		conn := dialRaw(t, ts, slug)
+		if err := conn.WriteJSON(map[string]string{"type": "auth", "token": aliceTok, "creatorToken": c.creatorTok}); err != nil {
+			t.Fatal(err)
+		}
+		you := readSnapshot(t, conn)["you"].(map[string]any)
+		if you["nextCreatorToken"] != c.want {
+			t.Fatalf("creatorToken %q: nextCreatorToken = %v, want %v", c.creatorTok, you["nextCreatorToken"], c.want)
+		}
+		if you["nextSessionToken"] == nil {
+			t.Fatalf("creatorToken %q: nextSessionToken missing", c.creatorTok)
+		}
+		// Broadcasts keep the connection's verified status.
+		s.Broadcast(slug)
+		if you := readSnapshot(t, conn)["you"].(map[string]any); you["nextCreatorToken"] != c.want {
+			t.Fatalf("creatorToken %q on broadcast: nextCreatorToken = %v", c.creatorTok, you["nextCreatorToken"])
+		}
 	}
 }

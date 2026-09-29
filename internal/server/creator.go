@@ -25,12 +25,17 @@ func (s *Server) requireCreator(w http.ResponseWriter, r *http.Request, v store.
 	if !ok {
 		return store.ParticipantRow{}, false
 	}
-	tokenOK := subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Creator-Token")), []byte(v.CreatorToken)) == 1
-	if !p.IsCreator || !tokenOK {
+	if !p.IsCreator || !creatorTokenValid(r.Header.Get("X-Creator-Token"), v) {
 		writeError(w, http.StatusForbidden, "creator token required")
 		return store.ParticipantRow{}, false
 	}
 	return p, true
+}
+
+// creatorTokenValid reports, in constant time, whether presented is v's
+// creator token. An empty token never matches.
+func creatorTokenValid(presented string, v store.VoteRow) bool {
+	return presented != "" && subtle.ConstantTimeCompare([]byte(presented), []byte(v.CreatorToken)) == 1
 }
 
 // handleRemoveParticipant implements DELETE /api/votes/{slug}/participants/{id}
@@ -79,7 +84,7 @@ func (s *Server) handleRemoveParticipant(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	s.changed(slug)
-	s.writeState(w, slug, &creator)
+	s.writeState(w, r, slug, &creator)
 }
 
 // rejectIfClosed writes 409 "this vote is closed" and returns true when the
@@ -125,7 +130,7 @@ func (s *Server) handleClose(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.changed(slug)
-	s.writeState(w, slug, &creator)
+	s.writeState(w, r, slug, &creator)
 }
 
 // handleReopen implements POST /api/votes/{slug}/reopen (spec B3). Reopening
@@ -149,7 +154,7 @@ func (s *Server) handleReopen(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.changed(slug)
-	s.writeState(w, slug, &creator)
+	s.writeState(w, r, slug, &creator)
 }
 
 type nextVoteRequest struct {
@@ -248,10 +253,12 @@ func (s *Server) handleNextVote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	// The caller just proved creator credentials and receives the new
+	// creator token in this same response.
 	writeJSON(w, http.StatusCreated, createVoteResponse{
 		Slug:         next.Slug,
 		CreatorToken: next.CreatorToken,
 		SessionToken: me.Token,
-		State:        d.stateFor(me.Token),
+		State:        d.stateFor(me.Token, true),
 	})
 }
