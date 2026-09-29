@@ -18,6 +18,9 @@ const (
 	// deadline, so a half-open connection is reaped within one missed ping.
 	wsPongWait   = 70 * time.Second
 	wsSendBuffer = 8
+	// defaultWSAuthTimeout bounds how long an upgraded connection may sit
+	// without sending its auth message before it is closed.
+	defaultWSAuthTimeout = 5 * time.Second
 )
 
 // upgrader builds the WebSocket upgrader. Origins are checked (same-origin
@@ -44,7 +47,7 @@ type wsConn struct {
 	conn      *websocket.Conn
 	send      chan []byte
 	slug      string
-	token     string // session token presented on connect; "" for spectators
+	token     string // session token from the auth message; "" for spectators
 	ip        string // client IP, for the per-IP connection cap
 	done      chan struct{}
 	closeOnce sync.Once
@@ -58,37 +61,55 @@ func (c *wsConn) close() {
 
 // hub tracks live WebSocket connections per vote slug so that state changes
 // can be broadcast as personalized snapshots.
+//
+// pending counts per-slug slots reserved by connections that have upgraded
+// but not yet sent their auth message. They are not in rooms (so they get no
+// broadcasts) but must still count toward maxWSPerVote, otherwise a burst of
+// silent dials could exceed the cap during the auth window.
 type hub struct {
-	mu    sync.Mutex
-	rooms map[string]map[*wsConn]struct{}
-	perIP map[string]int
+	mu      sync.Mutex
+	rooms   map[string]map[*wsConn]struct{}
+	pending map[string]int
+	perIP   map[string]int
 }
 
 func newHub() *hub {
 	return &hub{
-		rooms: make(map[string]map[*wsConn]struct{}),
-		perIP: make(map[string]int),
+		rooms:   make(map[string]map[*wsConn]struct{}),
+		pending: make(map[string]int),
+		perIP:   make(map[string]int),
 	}
 }
 
 // reserve claims a connection slot for (slug, ip), reporting false if either
-// cap is already reached. A successful reserve must be paired with add (on
-// upgrade success) or release (on failure).
+// cap is already reached. A successful reserve must be paired with add (once
+// the connection authenticates) or release (on any failure before that).
 func (h *hub) reserve(slug, ip string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if len(h.rooms[slug]) >= maxWSPerVote || h.perIP[ip] >= maxWSPerIP {
+	if len(h.rooms[slug])+h.pending[slug] >= maxWSPerVote || h.perIP[ip] >= maxWSPerIP {
 		return false
 	}
+	h.pending[slug]++
 	h.perIP[ip]++
 	return true
 }
 
-// release returns a per-IP slot claimed by reserve.
-func (h *hub) release(ip string) {
+// release returns the per-vote and per-IP slots claimed by reserve for a
+// connection that never made it into the hub.
+func (h *hub) release(slug, ip string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.unpendLocked(slug)
 	h.releaseLocked(ip)
+}
+
+func (h *hub) unpendLocked(slug string) {
+	if h.pending[slug] <= 1 {
+		delete(h.pending, slug)
+	} else {
+		h.pending[slug]--
+	}
 }
 
 func (h *hub) releaseLocked(ip string) {
@@ -99,9 +120,12 @@ func (h *hub) releaseLocked(ip string) {
 	}
 }
 
+// add registers an authenticated connection, converting the pending slot
+// claimed by reserve into a room membership.
 func (h *hub) add(c *wsConn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.unpendLocked(c.slug)
 	conns, ok := h.rooms[c.slug]
 	if !ok {
 		conns = make(map[*wsConn]struct{})
@@ -158,20 +182,17 @@ func (h *hub) all() []*wsConn {
 	return out
 }
 
-// handleWS implements GET /api/votes/{slug}/ws. The session token is passed
-// as the ?token= query parameter (WebSocket upgrade requests can't carry a
-// custom Authorization header from a browser EventSource-style API); a
-// missing or invalid token connects the caller as a spectator. On connect
-// and on every subsequent room change, the caller's personalized snapshot is
-// pushed as a single JSON text message.
+// handleWS implements GET /api/votes/{slug}/ws. After the upgrade the
+// client must send {"type":"auth","token":"..."} as its first message (see
+// wsAuth); an empty or invalid token connects the caller as a spectator. On
+// auth and on every subsequent room change, the caller's personalized
+// snapshot is pushed as a single JSON text message.
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
 	if _, err := s.store.GetVote(slug); err != nil {
 		writeError(w, http.StatusNotFound, "vote not found")
 		return
 	}
-
-	token := r.URL.Query().Get("token")
 
 	ip := s.clientIP(r)
 	if !s.hub.reserve(slug, ip) {
@@ -182,27 +203,64 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader().Upgrade(w, r, nil)
 	if err != nil {
 		// Upgrade already wrote an error response.
-		s.hub.release(ip)
+		s.hub.release(slug, ip)
 		return
 	}
 
 	c := &wsConn{
-		conn:  conn,
-		send:  make(chan []byte, wsSendBuffer),
-		slug:  slug,
-		token: token,
-		ip:    ip,
-		done:  make(chan struct{}),
+		conn: conn,
+		send: make(chan []byte, wsSendBuffer),
+		slug: slug,
+		ip:   ip,
+		done: make(chan struct{}),
 	}
-	s.hub.add(c)
-
-	go s.wsWritePump(c)
-	go s.wsReadPump(c)
-
-	s.pushSnapshot(c)
+	go s.wsAuth(c)
 }
 
-// wsReadPump does nothing with incoming messages (the protocol is
+// wsAuthTimeout is how long wsAuth waits for the auth message.
+func (s *Server) wsAuthTimeout() time.Duration {
+	if s.cfg.WSAuthTimeout > 0 {
+		return s.cfg.WSAuthTimeout
+	}
+	return defaultWSAuthTimeout
+}
+
+// wsAuth waits for the client's auth message before the connection joins the
+// hub. Tokens travel in a message rather than the URL so they never land in
+// proxy or tunnel access logs. A missing, malformed or wrong-typed first
+// message closes the connection with a policy-violation code.
+func (s *Server) wsAuth(c *wsConn) {
+	c.conn.SetReadLimit(4096)
+	_ = c.conn.SetReadDeadline(time.Now().Add(s.wsAuthTimeout()))
+	var msg struct {
+		Type  string `json:"type"`
+		Token string `json:"token"`
+	}
+	if err := c.conn.ReadJSON(&msg); err != nil || msg.Type != "auth" {
+		_ = c.conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "auth required"),
+			time.Now().Add(wsWriteWait))
+		c.conn.Close()
+		s.hub.release(c.slug, c.ip)
+		return
+	}
+	c.token = msg.Token
+	s.hub.add(c)
+	go s.wsWritePump(c)
+	// Close may have swept the hub while this connection was still pending.
+	// Checking stop after add closes that gap: either Close's sweep saw c, or
+	// stop is already closed here.
+	select {
+	case <-s.stop:
+		s.hub.remove(c)
+		c.close()
+	default:
+		s.pushSnapshot(c)
+	}
+	s.wsReadPump(c)
+}
+
+// wsReadPump does nothing with incoming messages after auth (the protocol is
 // server-push only) but must keep reading so control frames (close, pong)
 // are processed and the connection's death is detected promptly.
 func (s *Server) wsReadPump(c *wsConn) {

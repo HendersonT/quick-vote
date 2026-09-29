@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -81,8 +82,32 @@ func TestHubConnectionCaps(t *testing.T) {
 	if h.reserve("room", "1.2.3.4") {
 		t.Fatal("reserve past per-IP cap allowed")
 	}
-	h.release("1.2.3.4")
+	h.release("room", "1.2.3.4")
 	if !h.reserve("room", "1.2.3.4") {
 		t.Fatal("released slot not reusable")
+	}
+}
+
+// TestHubPendingCountsTowardVoteCap: connections still waiting for their auth
+// message are not in the room yet, but must still hold a per-vote slot, or a
+// burst of unauthenticated dials could blow past maxWSPerVote.
+func TestHubPendingCountsTowardVoteCap(t *testing.T) {
+	h := newHub()
+	for i := 0; i < maxWSPerVote; i++ {
+		if !h.reserve("room", fmt.Sprintf("10.0.%d.%d", i/250, i%250)) {
+			t.Fatalf("reserve %d refused below per-vote cap", i)
+		}
+	}
+	if h.reserve("room", "192.0.2.1") {
+		t.Fatal("pending reservations must count toward the per-vote cap")
+	}
+	h.release("room", "10.0.0.0")
+	if !h.reserve("room", "192.0.2.1") {
+		t.Fatal("released pending slot not reusable")
+	}
+	// Promoting a reservation to a registered connection keeps the count.
+	h.add(&wsConn{slug: "room", ip: "192.0.2.1"})
+	if h.reserve("room", "192.0.2.2") {
+		t.Fatal("add must not free the slot it was reserved under")
 	}
 }

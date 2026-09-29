@@ -47,6 +47,9 @@ type Config struct {
 	// Clock drives deadlines, timestamps and pruning. nil means real time;
 	// tests inject clock.NewFake.
 	Clock clock.Clock
+	// WSAuthTimeout bounds how long a new WebSocket may wait before sending
+	// its auth message. 0 means 5 s; tests shorten it.
+	WSAuthTimeout time.Duration
 }
 
 // Server wires the chi router to a Store and (optionally) a static asset

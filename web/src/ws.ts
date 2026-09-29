@@ -8,6 +8,11 @@ const MAX_BACKOFF_MS = 15000;
  * exponential backoff (1s, 2s, 4s, ... capped at 15s); the server resends
  * the full snapshot on every (re)connect.
  *
+ * The session token is sent as the first message after the socket opens
+ * (`{"type":"auth","token":...}`, empty for spectators) rather than in the
+ * URL, so it never lands in proxy or tunnel access logs. The server closes
+ * connections that don't authenticate within a few seconds.
+ *
  * Returns a cleanup function that closes the socket and stops reconnecting.
  */
 export function connectRoom(
@@ -21,13 +26,14 @@ export function connectRoom(
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
-  const url = `${wsProtocol}://${location.host}/api/votes/${slug}/ws?token=${encodeURIComponent(token)}`;
+  const url = `${wsProtocol}://${location.host}/api/votes/${slug}/ws`;
 
   function connect() {
     if (closed) return;
     socket = new WebSocket(url);
 
     socket.onopen = () => {
+      socket?.send(JSON.stringify({ type: "auth", token }));
       backoffMs = 1000;
     };
 

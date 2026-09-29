@@ -18,7 +18,8 @@ import (
 )
 
 // newWSTestServer builds a server backed by a real httptest.Server, since
-// gorilla's websocket.Dialer needs to dial an actual network listener.
+// gorilla's websocket.Dialer needs to dial an actual network listener. The
+// WS auth timeout is shortened so no-auth tests finish quickly.
 func newWSTestServer(t *testing.T) (*server.Server, *httptest.Server) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -26,32 +27,34 @@ func newWSTestServer(t *testing.T) (*server.Server, *httptest.Server) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	s := server.New(st, nil)
+	s := server.NewWithConfig(st, nil, server.Config{WSAuthTimeout: 200 * time.Millisecond})
 	ts := httptest.NewServer(s)
 	t.Cleanup(ts.Close)
 	return s, ts
 }
 
-func dialWS(t *testing.T, ts *httptest.Server, slug, token string) *websocket.Conn {
+// dialRaw opens the vote's WebSocket without sending the auth message.
+func dialRaw(t *testing.T, ts *httptest.Server, slug string) *websocket.Conn {
 	t.Helper()
-	u, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("parse url: %v", err)
-	}
-	u.Scheme = "ws"
-	u.Path = "/api/votes/" + slug + "/ws"
-	if token != "" {
-		q := u.Query()
-		q.Set("token", token)
-		u.RawQuery = q.Encode()
-	}
-	conn, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	u := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/votes/" + slug + "/ws"
+	conn, resp, err := websocket.DefaultDialer.Dial(u, nil)
 	if err != nil {
 		t.Fatalf("dial ws: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("dial ws: unexpected status %d", resp.StatusCode)
+	}
+	return conn
+}
+
+// dialWS opens the vote's WebSocket and authenticates with token ("" for a
+// spectator) as the first message, as the web client does.
+func dialWS(t *testing.T, ts *httptest.Server, slug, token string) *websocket.Conn {
+	t.Helper()
+	conn := dialRaw(t, ts, slug)
+	if err := conn.WriteJSON(map[string]string{"type": "auth", "token": token}); err != nil {
+		t.Fatalf("send auth: %v", err)
 	}
 	return conn
 }
@@ -103,6 +106,9 @@ func TestWebSocketConcurrentBroadcastNoPanic(t *testing.T) {
 	// pushSnapshot takes the drop-and-close path.
 	stuck := dialWS(t, ts, slug, sessionToken)
 	defer stuck.Close()
+	// Reading the initial snapshot proves the connection has authenticated
+	// and joined the hub, so the broadcasts below actually target it.
+	readSnapshot(t, stuck)
 
 	// Fan out many concurrent broadcasts for the same slug, mirroring what
 	// happens when multiple HTTP mutations hit the same room at once.
@@ -160,5 +166,63 @@ func TestWebSocketBroadcastsOnChange(t *testing.T) {
 		if !found {
 			t.Fatalf("expected to receive a snapshot containing the new option within 2s")
 		}
+	}
+}
+
+func TestWebSocketNoAuthMessageIsClosed(t *testing.T) {
+	s, ts := newWSTestServer(t)
+	slug, _, _, _ := createVote(t, s, nil)
+	conn := dialRaw(t, ts, slug)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, err := conn.ReadMessage()
+	if !websocket.IsCloseError(err, websocket.ClosePolicyViolation) {
+		t.Fatalf("want policy-violation close without auth, got %v", err)
+	}
+}
+
+func TestWebSocketGarbageFirstMessageIsClosed(t *testing.T) {
+	s, ts := newWSTestServer(t)
+	slug, _, _, _ := createVote(t, s, nil)
+	for _, msg := range []string{`{"type":"hello"}`, `not json`} {
+		conn := dialRaw(t, ts, slug)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(msg))
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _, err := conn.ReadMessage()
+		if !websocket.IsCloseError(err, websocket.ClosePolicyViolation) {
+			t.Fatalf("first message %q: want policy-violation close, got %v", msg, err)
+		}
+	}
+}
+
+func TestWebSocketQueryTokenIgnored(t *testing.T) {
+	s, ts := newWSTestServer(t)
+	slug, _, tok, _ := createVote(t, s, nil)
+	u := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/votes/" + slug + "/ws?token=" + url.QueryEscape(tok)
+	conn, _, err := websocket.DefaultDialer.Dial(u, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.WriteJSON(map[string]string{"type": "auth"})
+	if snap := readSnapshot(t, conn); snap["you"] != nil {
+		t.Fatal("a ?token= query parameter must not authenticate")
+	}
+}
+
+// TestWebSocketMessagesAfterAuthIgnored checks that once authenticated, later
+// client messages (including a second auth attempt) neither change the
+// connection's identity nor kill it.
+func TestWebSocketMessagesAfterAuthIgnored(t *testing.T) {
+	s, ts := newWSTestServer(t)
+	slug, _, tok, _ := createVote(t, s, nil)
+	conn := dialWS(t, ts, slug, "")
+	if snap := readSnapshot(t, conn); snap["you"] != nil {
+		t.Fatal("spectator snapshot must not carry you")
+	}
+	_ = conn.WriteJSON(map[string]string{"type": "auth", "token": tok})
+	_ = conn.WriteMessage(websocket.TextMessage, []byte("garbage"))
+	s.Broadcast(slug)
+	if snap := readSnapshot(t, conn); snap["you"] != nil {
+		t.Fatal("a second auth message must not upgrade a spectator")
 	}
 }
