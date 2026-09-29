@@ -372,3 +372,19 @@ func TestLengthLimitsCountCharacters(t *testing.T) {
 		t.Fatalf("201-character suggestion: %d, want 400", rec.Code)
 	}
 }
+
+// TestInternalErrorsAreGeneric: a 500 says only "internal error", never which
+// store step failed (spec error conventions).
+func TestInternalErrorsAreGeneric(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := server.New(st, nil)
+	st.Close() // every store call now fails
+
+	rec, out := doJSON(t, s, http.MethodPost, "/api/votes", map[string]any{"title": "T", "creatorName": "A"}, "")
+	if rec.Code != http.StatusInternalServerError || out["error"] != "internal error" {
+		t.Fatalf("create with a failing store: %d %v, want 500 \"internal error\"", rec.Code, out)
+	}
+}

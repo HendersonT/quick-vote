@@ -173,7 +173,7 @@ func (s *Server) handleCreateVote(w http.ResponseWriter, r *http.Request) {
 	participantID := ids.NewToken()
 
 	if err := s.store.CreateVote(v); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create vote")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -186,7 +186,7 @@ func (s *Server) handleCreateVote(w http.ResponseWriter, r *http.Request) {
 		JoinedAt:  v.CreatedAt,
 	}
 	if err := s.store.AddParticipant(p); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add creator")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -306,7 +306,7 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		JoinedAt: s.now().Unix(),
 	}
 	if err := s.store.AddParticipant(p); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to join")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -496,7 +496,7 @@ func (s *Server) handleCreateSuggestion(w http.ResponseWriter, r *http.Request) 
 		CreatedAt:     s.now().Unix(),
 	}
 	if err := s.store.AddOption(o); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add suggestion")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -633,7 +633,7 @@ func (s *Server) handlePutBallot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.PutBallot(slug, p.ID, string(buf)); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save ballot")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
