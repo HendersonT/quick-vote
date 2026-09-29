@@ -306,20 +306,32 @@ func (s *Store) CreateVote(v VoteRow) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := insertVote(s.db, v); err != nil {
+		return fmt.Errorf("create vote: %w", err)
+	}
+	return nil
+}
+
+// execer is what insertVote needs from either *sql.DB or *sql.Tx.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// insertVote is the single INSERT for a votes row, shared by CreateVote and
+// CreateNextVote so a new column can't be added to one and missed in the
+// other. A zero LastActivity defaults to CreatedAt.
+func insertVote(db execer, v VoteRow) error {
 	if v.LastActivity == 0 {
 		v.LastActivity = v.CreatedAt
 	}
-	_, err := s.db.Exec(
+	_, err := db.Exec(
 		`INSERT INTO votes (slug, title, phase, settings, creator_token, phase_deadline, results, created_at, active_options,
 		   last_activity, closed_at, next_slug, next_creator_token)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		v.Slug, v.Title, v.Phase, v.Settings, v.CreatorToken, v.PhaseDeadline, v.Results, v.CreatedAt, v.ActiveOptions,
 		v.LastActivity, v.ClosedAt, v.NextSlug, v.NextCreatorToken,
 	)
-	if err != nil {
-		return fmt.Errorf("create vote: %w", err)
-	}
-	return nil
+	return err
 }
 
 // GetVote fetches a vote by slug. Returns ErrNotFound if it does not exist.
@@ -416,43 +428,14 @@ func (s *Store) CreateNextVote(srcSlug string, next VoteRow, carried map[string]
 		return fmt.Errorf("clear stale next tokens: %w", err)
 	}
 
-	if next.LastActivity == 0 {
-		next.LastActivity = next.CreatedAt
-	}
-	if _, err := tx.Exec(
-		`INSERT INTO votes (slug, title, phase, settings, creator_token, phase_deadline, results, created_at, active_options,
-		   last_activity, closed_at, next_slug, next_creator_token)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		next.Slug, next.Title, next.Phase, next.Settings, next.CreatorToken, next.PhaseDeadline, next.Results,
-		next.CreatedAt, next.ActiveOptions, next.LastActivity, next.ClosedAt, next.NextSlug, next.NextCreatorToken,
-	); err != nil {
+	if err := insertVote(tx, next); err != nil {
 		return fmt.Errorf("create next vote: %w", err)
 	}
 
-	// Insert in source join order so the new room lists the group the same
-	// way (Participants orders by joined_at, then rowid).
-	rows, err := tx.Query(
-		`SELECT id FROM participants WHERE vote_slug = ? ORDER BY joined_at ASC, rowid ASC`, srcSlug,
-	)
+	order, err := carriedInJoinOrder(tx, srcSlug, carried)
 	if err != nil {
-		return fmt.Errorf("list source participants: %w", err)
+		return err
 	}
-	var order []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan source participant: %w", err)
-		}
-		if _, ok := carried[id]; ok {
-			order = append(order, id)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("list source participants: %w", err)
-	}
-	rows.Close()
 	if len(order) != len(carried) {
 		return fmt.Errorf("create next vote: carried participant not in source vote %s", srcSlug)
 	}
@@ -483,6 +466,34 @@ func (s *Store) CreateNextVote(srcSlug string, next VoteRow, carried map[string]
 		return fmt.Errorf("commit next vote: %w", err)
 	}
 	return nil
+}
+
+// carriedInJoinOrder returns the source participant IDs present in carried,
+// in the source vote's join order, so the new room lists the group the same
+// way (Participants orders by joined_at, then rowid). Its rows are closed on
+// return, before the caller issues more statements on tx.
+func carriedInJoinOrder(tx *sql.Tx, srcSlug string, carried map[string]ParticipantRow) ([]string, error) {
+	rows, err := tx.Query(
+		`SELECT id FROM participants WHERE vote_slug = ? ORDER BY joined_at ASC, rowid ASC`, srcSlug,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list source participants: %w", err)
+	}
+	defer rows.Close()
+	var order []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan source participant: %w", err)
+		}
+		if _, ok := carried[id]; ok {
+			order = append(order, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list source participants: %w", err)
+	}
+	return order, nil
 }
 
 // ActiveDeadlines returns the phase deadline (unix seconds) for every vote
@@ -576,8 +587,8 @@ func (s *Store) RemoveParticipant(slug, participantID, newToken string, deleteOp
 	}
 	if _, err := tx.Exec(
 		`UPDATE participants SET removed_at = ?, token = ?, wants_revote = 0, done_suggesting = 0, next_token = NULL
-		 WHERE id = ?`,
-		at, newToken, participantID,
+		 WHERE id = ? AND vote_slug = ?`,
+		at, newToken, participantID, slug,
 	); err != nil {
 		return fmt.Errorf("mark participant removed: %w", err)
 	}
@@ -721,24 +732,10 @@ func (s *Store) AddOption(o OptionRow) error {
 // If the option does not exist or is owned by someone else, it is a no-op
 // and an error is returned.
 func (s *Store) DeleteOption(slug, optionID, participantID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	res, err := s.db.Exec(
+	return s.deleteOption(
 		`DELETE FROM options WHERE id = ? AND vote_slug = ? AND participant_id = ?`,
 		optionID, slug, participantID,
 	)
-	if err != nil {
-		return fmt.Errorf("delete option: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("delete option rows affected: %w", err)
-	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
 }
 
 // DeleteOptionAny deletes an option regardless of who suggested it. Callers
@@ -746,13 +743,16 @@ func (s *Store) DeleteOption(slug, optionID, participantID string) error {
 // path (spec B2), so unlike DeleteOption it has no owner filter. Returns
 // ErrNotFound if the option doesn't exist in this vote.
 func (s *Store) DeleteOptionAny(slug, optionID string) error {
+	return s.deleteOption(`DELETE FROM options WHERE id = ? AND vote_slug = ?`, optionID, slug)
+}
+
+// deleteOption runs one of the option DELETEs above, mapping "no row
+// matched" to ErrNotFound.
+func (s *Store) deleteOption(query string, args ...any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	res, err := s.db.Exec(
-		`DELETE FROM options WHERE id = ? AND vote_slug = ?`,
-		optionID, slug,
-	)
+	res, err := s.db.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("delete option: %w", err)
 	}
