@@ -18,6 +18,15 @@ interface ResultsPhaseProps {
 }
 
 /**
+ * "1 vote" / "7 votes". A score is the total of the votes cast on an option
+ * (credits are what those votes cost a voter), and the survival threshold
+ * is compared against that total, so both are shown in votes.
+ */
+function votes(n: number): string {
+  return `${n} vote${n === 1 ? "" : "s"}`;
+}
+
+/**
  * Score bars, winner/tie banner, export/share actions, and the re-vote toggle
  * for `results`.
  */
@@ -147,7 +156,7 @@ export default function ResultsPhase({
               ) : (
                 s.eliminated && (
                   <span className="veto-badge">
-                    eliminated — under {state.settings.survivalThreshold} credits
+                    eliminated — under {votes(state.settings.survivalThreshold)}
                   </span>
                 )
               )}
@@ -159,7 +168,7 @@ export default function ResultsPhase({
               />
             </div>
             <span className="score-detail">
-              {s.score} credits · {s.backers} backer{s.backers === 1 ? "" : "s"}
+              {votes(s.score)} · {s.backers} backer{s.backers === 1 ? "" : "s"}
             </span>
           </li>
         ))}

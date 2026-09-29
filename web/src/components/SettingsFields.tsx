@@ -205,8 +205,8 @@ export default function SettingsFields({ value, onChange }: SettingsFieldsProps)
             onChange={(e) => set("survivalThreshold", Number(e.target.value))}
           />
           <p className="field-hint">
-            0 disables the threshold; N = minimum credits an option needs to
-            survive.
+            0 disables the threshold; N = minimum total votes an option needs
+            to survive.
           </p>
         </div>
 
@@ -238,7 +238,7 @@ export default function SettingsFields({ value, onChange }: SettingsFieldsProps)
             onChange={(e) => set("voteScalingExponent", Number(e.target.value))}
           />
           <p className="field-hint">
-            Cost of stacking v credits on one option = v raised to this power
+            Cost of stacking v votes on one option = v raised to this power
             (1 = linear, 2 = quadratic default, higher = steeper penalty for
             piling on).
           </p>

@@ -57,7 +57,7 @@ Three phases move in order: **suggesting → voting → results**.
    cheap and piling onto one option is expensive; 1 = linear; up to 4 for a
    much steeper penalty). You can resubmit your ballot until the phase ends.
    If vetoes are enabled, a voter can spend a flat credit cost to explicitly
-   veto an option instead of allocating credits to it.
+   veto an option instead of voting for it.
 3. **Results** — each option's score is the sum of votes cast on it. Options
    below the survival threshold, or explicitly vetoed by anyone, are
    eliminated; the highest surviving score wins, with ties resolved by the
@@ -118,9 +118,9 @@ Set at creation time (the last few live behind an "Advanced" fold):
 | **Credits per option** | 3 | Budget multiplier. Total budget = this × number of options. Higher = more expressive ballots. |
 | **Suggestion-phase advance rule** | manual | `manual` (creator advances), `count:N` (N distinct participants have each submitted at least one suggestion), `suggestion-count:N` (N total suggestions submitted, by anyone), or `all-done` (every current participant has marked themselves "done suggesting"). |
 | **Voting-phase advance rule** | all-voted | `manual` or `all-voted` (auto-advance once every current participant has submitted a ballot). |
-| **Survival threshold** | 0 | Minimum total score an option needs to survive. The default `0` disables the threshold, so every non-vetoed option stays in contention. Set `1` to eliminate options nobody spent credits on; raise it further to require broader support. |
-| **Veto cost** | 0 (off) | Credits a voter spends to explicitly veto an option (ballot value `-1`) instead of allocating credits to it. `0` disables vetoing. A vetoed option is eliminated no matter its score; results show "vetoed by N voter(s)", distinct from an under-threshold elimination. |
-| **Vote cost scaling** | 2.0 (quadratic) | Exponent in the cost formula `ceil(votes ^ exponent)`, 1.0–4.0. `1` = linear cost, `2` = the original quadratic cost, higher values penalize concentrating credits on one option more steeply. |
+| **Survival threshold** | 0 | Minimum total votes an option needs to survive (its score is the sum of the votes cast on it). The default `0` disables the threshold, so every non-vetoed option stays in contention. Set `1` to eliminate options nobody voted for; raise it further to require broader support. |
+| **Veto cost** | 0 (off) | Credits a voter spends to explicitly veto an option (ballot value `-1`) instead of voting for it. `0` disables vetoing. A vetoed option is eliminated no matter its score; results show "vetoed by N voter(s)", distinct from an under-threshold elimination. |
+| **Vote cost scaling** | 2.0 (quadratic) | Exponent in the cost formula `ceil(votes ^ exponent)`, 1.0–4.0. `1` = linear cost, `2` = the original quadratic cost, higher values penalize concentrating votes on one option more steeply. |
 | **Tiebreaker** | most-backers | How a tie for the top score is broken: `most-backers` (most distinct voters, then random), `random`, `creator` (results pause and the creator picks among the tied options), `earliest` (earliest-suggested tied option wins), or `runoff` (reopen voting on just the tied options, ballots cleared; a repeat tie resolves via the fallback below). |
 | **Runoff fallback** | random | Only used when tiebreaker is `runoff`: how a tie *within* the runoff round itself is resolved (`most-backers`, `random`, `creator`, or `earliest` — never another runoff, so it always terminates). |
 | **Re-vote threshold** | 33% | Percentage of current participants whose re-vote calls are needed to send the room back to voting (rounded up, minimum 1). |

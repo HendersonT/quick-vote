@@ -67,7 +67,7 @@ export default function VotePhase({
     });
   }
 
-  /** Toggling veto clears any credits the voter had on that option. */
+  /** Toggling veto clears any votes the voter had on that option. */
   function toggleVeto(optionId: string) {
     setVotes((v) => {
       const next = { ...v };

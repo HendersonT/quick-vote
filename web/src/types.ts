@@ -23,7 +23,7 @@ export interface Settings {
   // vetoCost is the credit price of vetoing an option (ballot value -1).
   // 0 disables veto entirely (default; preserves current behavior).
   vetoCost: number;
-  // voteScalingExponent controls how steeply the cost of stacking credits
+  // voteScalingExponent controls how steeply the cost of stacking votes
   // on one option grows: cost(v) = ceil(v^exponent - epsilon). 2.0 (the
   // default) reproduces the original quadratic cost.
   voteScalingExponent: number;

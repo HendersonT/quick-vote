@@ -4,7 +4,7 @@
 // v*v-quadratic, no-veto behavior for callers that don't pass them.
 
 /**
- * Credit cost of putting v (>0) credits on a single option, given the vote's
+ * Credit cost of putting v (>0) votes on a single option, given the vote's
  * scaling exponent. The 1e-9 epsilon keeps exact integer powers (e.g. 3^2 ==
  * 9) from rounding up to the next integer due to floating-point error in
  * Math.pow — matches Go's voteCost bit-for-bit.
@@ -46,7 +46,7 @@ export const canIncrement = (
   vetoCost = 0,
 ) => {
   const current = votes[optionId] ?? 0;
-  // A vetoed option (-1) starts back at 0 credits if the user increments
+  // A vetoed option (-1) starts back at 0 votes if the user increments
   // instead of un-vetoing — incrementing is only ever offered in the UI on
   // non-vetoed rows, but guard here too so the math stays sound either way.
   const next = { ...votes, [optionId]: (current > 0 ? current : 0) + 1 };

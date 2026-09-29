@@ -33,7 +33,7 @@ describe("ballotCost", () => {
   });
 
   it("mixes positive votes and vetoes in one ballot", () => {
-    // a: 2 credits @ exponent 2 = 4, b: veto @ vetoCost 3, c: 1 credit = 1
+    // a: 2 votes @ exponent 2 = 4, b: veto @ vetoCost 3, c: 1 vote = 1
     expect(ballotCost({ a: 2, b: -1, c: 1 }, 2, 3)).toBe(8);
   });
 });
