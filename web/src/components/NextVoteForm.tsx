@@ -7,6 +7,8 @@ import { checkTitle, MAX_TITLE_CHARS } from "../validation";
 import SettingsFields, { fromSettings, toSettings, type SettingsFormState } from "./SettingsFields";
 
 interface NextVoteFormProps {
+  /** Element id, referenced by the toggle's aria-controls. */
+  id?: string;
   slug: string;
   sessionToken: string;
   creatorToken: string;
@@ -22,6 +24,7 @@ interface NextVoteFormProps {
  * snapshot, so the group follows automatically.
  */
 export default function NextVoteForm({
+  id,
   slug,
   sessionToken,
   creatorToken,
@@ -72,7 +75,7 @@ export default function NextVoteForm({
   }
 
   return (
-    <form className="next-vote-form" onSubmit={handleSubmit}>
+    <form id={id} className="next-vote-form" onSubmit={handleSubmit}>
       <h2>Start another vote with this group</h2>
       <p className="field-hint">
         Everyone here moves to the new vote automatically.

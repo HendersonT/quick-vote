@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { copyText } from "../clipboard";
 import QrCode from "./QrCode";
 
@@ -9,6 +9,7 @@ import QrCode from "./QrCode";
 export default function ShareLink({ slug }: { slug: string }) {
   const [copied, setCopied] = useState(false);
   const [showQr, setShowQr] = useState(false);
+  const qrPanelId = useId();
   const url = `${window.location.origin}/v/${slug}`;
 
   async function handleCopy() {
@@ -27,12 +28,13 @@ export default function ShareLink({ slug }: { slug: string }) {
         type="button"
         className="share-link"
         aria-expanded={showQr}
+        aria-controls={qrPanelId}
         onClick={() => setShowQr((v) => !v)}
       >
         {showQr ? "Hide QR" : "Show QR"}
       </button>
       {showQr && (
-        <div className="qr-panel">
+        <div id={qrPanelId} className="qr-panel">
           <QrCode url={url} />
         </div>
       )}

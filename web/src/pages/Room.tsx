@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { advanceVote, closeVote, getVote, removeParticipant, reopenVote } from "../api";
 import { navigate } from "../App";
 import ConfirmButton from "../components/ConfirmButton";
@@ -78,6 +78,7 @@ export default function Room({ slug }: RoomProps) {
   const [controlError, setControlError] = useState<string | null>(null);
   const [controlBusy, setControlBusy] = useState(false);
   const [showNextForm, setShowNextForm] = useState(false);
+  const nextFormId = useId();
   // Set when a live session stops resolving (removed by the creator, or the
   // server no longer knows the token): the join gate explains why.
   const [removed, setRemoved] = useState(false);
@@ -255,6 +256,7 @@ export default function Room({ slug }: RoomProps) {
               <button
                 type="button"
                 aria-expanded={showNextForm}
+                aria-controls={nextFormId}
                 onClick={() => setShowNextForm((v) => !v)}
               >
                 Start another vote with this group
@@ -264,6 +266,7 @@ export default function Room({ slug }: RoomProps) {
         )}
         {isCreator && showNextForm && !closed && !state.next && (
           <NextVoteForm
+            id={nextFormId}
             slug={slug}
             sessionToken={session.sessionToken}
             creatorToken={creatorToken}
