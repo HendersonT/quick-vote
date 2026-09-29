@@ -95,16 +95,26 @@ export function sortHistory(entries: HistoryEntry[]): HistoryEntry[] {
 
 // Next-vote handoff (spec B4). When the creator starts a follow-up vote, the
 // old room's snapshot carries each participant's new session token; the
-// browser saves it and follows the group. The "moved" marker makes that
-// automatic follow happen only once per old vote: without it, going back to
-// the old vote (history, back button, an old link) would bounce straight to
-// the new one again — a redirect loop the user can't escape.
+// browser saves it and follows the group. The "moved" marker records which
+// successor this browser already followed, so the automatic follow happens
+// only once per successor: without it, going back to the old vote (history,
+// back button, an old link) would bounce straight to the new one again — a
+// redirect loop the user can't escape. Keying on the successor (not just the
+// old vote) still lets a browser follow a replacement once, when a pruned
+// follow-up is superseded by a new one.
 
 const movedKey = (slug: string) => `qv:moved:${slug}`;
 
-/** Marks oldSlug as already followed, so it never auto-moves again. */
-export function markMoved(oldSlug: string): void {
-  localStorage.setItem(movedKey(oldSlug), "1");
+/** Marker value for "a follow-up is being created from this tab": blocks
+ * every auto-follow until recordMove or unmarkMoved settles it. */
+const PENDING_MOVE = "*";
+
+/**
+ * Marks oldSlug as followed to nextSlug, so that successor never auto-moves
+ * again. Without nextSlug it marks a pending move that blocks all successors.
+ */
+export function markMoved(oldSlug: string, nextSlug: string = PENDING_MOVE): void {
+  localStorage.setItem(movedKey(oldSlug), nextSlug);
 }
 
 /**
@@ -128,21 +138,19 @@ export function recordMove(
   session: Session,
 ): void {
   saveSession(next.slug, session);
-  markMoved(oldSlug);
+  markMoved(oldSlug, next.slug);
   addToHistory(next.slug, next.title);
 }
 
 /**
  * True when this browser should auto-follow the group to `state.next` —
- * only once per old slug, so revisiting an old vote never redirect-loops.
+ * only once per successor, so revisiting an old vote never redirect-loops.
  * Spectators and removed participants (no handoff token) never auto-move.
  */
 export function shouldAutoMove(oldSlug: string, state: RoomState): boolean {
-  return (
-    !!state.next &&
-    !!state.you?.nextSessionToken &&
-    localStorage.getItem(movedKey(oldSlug)) === null
-  );
+  if (!state.next || !state.you?.nextSessionToken) return false;
+  const followed = localStorage.getItem(movedKey(oldSlug));
+  return followed === null || (followed !== PENDING_MOVE && followed !== state.next.slug);
 }
 
 /**

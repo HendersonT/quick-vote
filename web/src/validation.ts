@@ -9,8 +9,9 @@ export type Checked = { ok: true; value: string } | { ok: false; error: string }
 
 /**
  * Length in characters (code points), which is how the server counts
- * (utf8.RuneCountInString); String.length counts UTF-16 units, so an emoji
- * would count double.
+ * (utf8.RuneCountInString). Note the inputs' maxLength attribute still
+ * counts UTF-16 units, so in the UI an emoji uses two of the limit; that
+ * only makes the browser stricter than the server, never looser.
  */
 function charCount(s: string): number {
   return [...s].length;

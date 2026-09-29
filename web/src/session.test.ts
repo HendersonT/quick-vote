@@ -105,6 +105,29 @@ describe("creator starting the next vote", () => {
   });
 });
 
+describe("replacement successor", () => {
+  beforeEach(() => vi.stubGlobal("localStorage", memStorage()));
+
+  // If the first follow-up is pruned and the creator starts another, the
+  // old room hands out fresh tokens for it; a browser that followed the first
+  // one must follow the replacement once too, then settle again.
+  it("follows a different successor once, then never loops", () => {
+    applyMove("old", moved(), "Bob");
+    expect(shouldAutoMove("old", moved())).toBe(false);
+
+    const replaced = moved({ next: { slug: "newer", title: "Newer" } } as Partial<RoomState>);
+    expect(shouldAutoMove("old", replaced)).toBe(true);
+    expect(applyMove("old", replaced, "Bob")).toBe("newer");
+    expect(shouldAutoMove("old", replaced)).toBe(false);
+  });
+
+  it("a pending creator request blocks every successor until it settles", () => {
+    markMoved("old");
+    const replaced = moved({ next: { slug: "newer", title: "Newer" } } as Partial<RoomState>);
+    expect(shouldAutoMove("old", replaced)).toBe(false);
+  });
+});
+
 describe("history closed flag", () => {
   beforeEach(() => vi.stubGlobal("localStorage", memStorage()));
 
