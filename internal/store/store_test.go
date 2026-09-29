@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"os"
@@ -1083,5 +1084,60 @@ func TestCreateNextVoteReplacesDanglingLink(t *testing.T) {
 	}
 	if bob, err := st.ParticipantByToken("src", "tok2"); err != nil || bob.NextToken != nil {
 		t.Fatalf("Bob wasn't carried this time but kept next token %v (err=%v)", bob.NextToken, err)
+	}
+}
+
+// TestCheckpointReportsBusy: PRAGMA wal_checkpoint reports "couldn't finish"
+// in its result row, not as an error, so Checkpoint must read that row. A
+// reader pinned to an older snapshot keeps TRUNCATE from completing.
+func TestCheckpointReportsBusy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "busy.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.CreateVote(VoteRow{Slug: "a", Title: "A", Phase: "suggesting", Settings: "{}", CreatorToken: "c", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	tx, err := reader.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := tx.QueryRow(`SELECT count(*) FROM votes`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateVote(VoteRow{Slug: "b", Title: "B", Phase: "suggesting", Settings: "{}", CreatorToken: "c2", CreatedAt: 2}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.Checkpoint(); err == nil {
+		t.Fatal("Checkpoint reported success while a reader blocked it")
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Checkpoint(); err != nil {
+		t.Fatalf("Checkpoint once the reader is gone: %v", err)
+	}
+}
+
+func TestCloseTwice(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "twice.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
 	}
 }

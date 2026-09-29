@@ -183,6 +183,9 @@ type Store struct {
 	mu sync.Mutex
 	// queries counts room-data reads (see QueryCount).
 	queries atomic.Int64
+	// closeOnce makes Close idempotent without a doomed second checkpoint.
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // QueryCount returns how many room-data reads (GetVote, Participants,
@@ -224,22 +227,33 @@ func Open(path string) (*Store, error) {
 
 // Close checkpoints the WAL and closes the underlying database connection.
 // The checkpoint's error is ignored: closing must still happen, and SQLite
-// also checkpoints on last-connection close when it can.
+// also checkpoints on last-connection close when it can. Later calls return
+// the first call's result without touching the closed database.
 func (s *Store) Close() error {
-	_ = s.Checkpoint()
-	return s.db.Close()
+	s.closeOnce.Do(func() {
+		_ = s.Checkpoint()
+		s.closeErr = s.db.Close()
+	})
+	return s.closeErr
 }
 
 // Checkpoint copies the WAL into the main database file and truncates the
 // WAL. SQLite only auto-checkpoints once the WAL reaches 1000 pages, so a
 // small, quiet database can otherwise keep all recent data in -wal
 // indefinitely, where a copy of the main file alone (a naive backup) misses it.
+//
+// A checkpoint blocked by another reader or writer is not a SQL error: the
+// pragma reports it in its result row (busy=1), so that row is checked too.
 func (s *Store) Checkpoint() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+	var busy, logFrames, checkpointed int
+	if err := s.db.QueryRow(`PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed); err != nil {
 		return fmt.Errorf("wal checkpoint: %w", err)
+	}
+	if busy != 0 {
+		return fmt.Errorf("wal checkpoint: blocked by another connection (%d of %d frames copied)", checkpointed, logFrames)
 	}
 	return nil
 }
