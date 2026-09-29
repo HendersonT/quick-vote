@@ -57,8 +57,6 @@ function dropNotice(): void {
   }
 }
 
-const REMOVED_NOTICE = "You're no longer in this vote — you can join again below.";
-
 interface PreJoinInfo {
   title: string;
   closed: boolean;
@@ -134,6 +132,9 @@ export default function Room({ slug }: RoomProps) {
         setSession(null);
         setState(null);
         setRemoved(true);
+        // This snapshot already says whether the vote is closed, so the
+        // gate can word its notice right without waiting for a refetch.
+        setPreJoin({ title: next.title, closed: next.closed, next: next.next });
         return;
       }
       setState(next);
@@ -204,7 +205,7 @@ export default function Room({ slug }: RoomProps) {
         slug={slug}
         title={preJoin?.title}
         onJoined={handleJoined}
-        notice={removed ? REMOVED_NOTICE : undefined}
+        removed={removed}
         next={preJoin?.next}
         closed={preJoin?.closed}
       />
