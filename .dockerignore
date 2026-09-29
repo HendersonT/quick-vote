@@ -8,3 +8,4 @@ webembed/dist
 *.db-wal
 docs
 README.md
+scripts

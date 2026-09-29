@@ -1,5 +1,7 @@
 # Quick Vote
 
+![CI](https://github.com/HendersonT/quick-vote/actions/workflows/ci.yml/badge.svg)
+
 A small, self-hostable web app for deciding between options (board games, movies,
 lunch spots — anything) using **quadratic voting**. One person creates a vote and
 shares a link; everyone suggests options, votes with a shared credit budget, and
@@ -7,6 +9,22 @@ sees a scored result with veto, tiebreak, and re-vote mechanics.
 
 It ships as a **single container**: a Go binary that embeds a React SPA and keeps
 all state in one SQLite file. One port, one volume, no external services.
+
+**Live demo:** <https://vote.aakster.net> — a public instance; anyone with a
+link can see a vote, and votes are deleted after 90 days without activity.
+
+### What is quadratic voting?
+
+Everyone gets the same budget of credits, and putting `v` votes on one option
+costs `v²` credits. Spreading support across several options is cheap;
+stacking it all on one gets expensive fast (1 vote costs 1, 3 votes cost 9).
+So a small group that cares a lot about an option can still move the result,
+but no single voice can dominate it — you learn how strongly people feel, not
+just which option they'd pick.
+
+| Create | Vote | Results |
+|---|---|---|
+| ![Creating a vote](docs/screenshots/create.png) | ![Bob's voting screen](docs/screenshots/voting.png) | ![Results with a winner](docs/screenshots/results.png) |
 
 ## Quick start
 
@@ -52,8 +70,38 @@ Three phases move in order: **suggesting → voting → results**.
 Phase changes and every other update are pushed live over a WebSocket, so all
 open browsers stay in sync.
 
+### Creator controls
+
+The creator can also, at any time:
+
+- **Remove a participant** — their suggestions (during the suggesting phase)
+  and ballot are wiped and their session stops working; their browser drops
+  to a read-only view with a "no longer in this vote" notice.
+- **Delete any suggestion** during the suggesting phase (everyone else can
+  delete only their own).
+- **Close the vote** — the room becomes read-only for everyone, including the
+  creator, and any running phase timer is cancelled. **Reopen** lifts that;
+  the timer does not come back, so the phase continues under manual control.
+- **Start another vote with the same group** — creates a follow-up vote
+  (same settings by default) with every current participant already in it.
+  Open browsers move to the new room automatically, once; anyone returning to
+  the old link later sees a banner pointing to the new vote instead.
+
+### Sharing
+
+- **QR code** — "Show QR" in the room header renders the room link as a QR
+  code (generated in the browser) for people in the same room as you.
+- **Results page** — `/v/<slug>/results` is a read-only view of the results,
+  safe to share with people who aren't in the vote.
+- **CSV download** — the results screen links to
+  `/api/votes/<slug>/results.csv`: one row per option with rank, option,
+  score, backers, vetoes, eliminated and winner. Totals only; individual
+  ballots are never exported (or shown to anyone but their owner).
+
 Votes are stored in SQLite and deleted automatically after 90 days without activity
-(configurable with `QV_RETENTION_DAYS`; `0` keeps them forever). Until then a
+(configurable with `QV_RETENTION_DAYS`; `0` keeps them forever). Any change to
+a vote — joining, suggesting, voting, a phase change, closing — counts as
+activity; just viewing it doesn't. Until then a
 vote's room stays reachable at its `/v/<slug>` link, and each browser also
 keeps a local "recent votes" list (in `localStorage`, not synced anywhere) so
 you can find your way back to rooms you created or joined without keeping the
@@ -80,8 +128,61 @@ Set at creation time (the last few live behind an "Advanced" fold):
 | **Voting timer** | off | Optional duration; when it expires the voting phase auto-advances and results are scored. |
 
 The creator is a participant like everyone else and holds a separate creator
-token (kept in the browser) that gates the "advance phase" and creator-tiebreak
-controls. Settings cannot be changed after a vote is created.
+token (kept in the browser) that gates the creator controls: advancing the
+phase, creator tiebreaks, removing participants and suggestions, close/reopen,
+and starting the next vote. Settings cannot be changed after a vote is created
+(a follow-up vote can use different ones).
+
+## API
+
+JSON over HTTP under `/api/votes`. Participants authenticate with
+`Authorization: Bearer <sessionToken>` (returned when creating or joining);
+creator-only endpoints additionally require `X-Creator-Token: <creatorToken>`
+**and** the creator's own session. Errors are `{"error": "..."}` with 400
+(validation), 401 (missing/invalid session), 403 (wrong creator token), 404
+(unknown vote, participant or option), 409 (wrong phase, vote closed, or
+state conflict), or 429 (rate limited). Every write to a closed vote returns
+409 until it is reopened.
+
+| Method | Path | Who | Purpose |
+|---|---|---|---|
+| `POST` | `/api/votes` | anyone | Create a vote: `{title, creatorName, settings?}` → `{slug, creatorToken, sessionToken, state}`. |
+| `GET` | `/api/votes/{slug}` | anyone | Room state (personalized with a Bearer token). |
+| `POST` | `/api/votes/{slug}/join` | anyone | Join: `{name}` → `{sessionToken, state}`. |
+| `POST` | `/api/votes/{slug}/suggestions` | participant | Suggest an option: `{title}`. |
+| `DELETE` | `/api/votes/{slug}/suggestions/{id}` | participant / creator | Delete your own suggestion, or (creator) any suggestion. Suggesting phase only. |
+| `POST` | `/api/votes/{slug}/done-suggesting` | participant | Mark yourself done suggesting. |
+| `PUT` | `/api/votes/{slug}/ballot` | participant | Submit your ballot: `{votes: {optionId: n}}`. |
+| `POST` | `/api/votes/{slug}/advance` | creator | Advance the phase (`{winnerOptionId}` for a creator tiebreak). |
+| `POST` | `/api/votes/{slug}/revote` | participant | Call for a re-vote. |
+| `DELETE` | `/api/votes/{slug}/participants/{id}` | creator | Remove a participant and wipe their ballot (and suggestions, while suggesting). The creator can't be removed. |
+| `POST` | `/api/votes/{slug}/close` | creator | Close the vote (idempotent); cancels any phase timer. |
+| `POST` | `/api/votes/{slug}/reopen` | creator | Reopen a closed vote; no timer is re-armed. |
+| `POST` | `/api/votes/{slug}/next` | creator | Start a follow-up vote with the same group: `{title, settings?}` → `{slug, creatorToken, sessionToken, state}` for the new vote. Settings default to this vote's. 409 if the vote is closed or already has a follow-up. |
+| `GET` | `/api/votes/{slug}/results.csv` | anyone | Results as CSV (totals only). 409 until results are in. |
+| `GET` | `/api/votes/{slug}/ws` | anyone | WebSocket for live room state (see below). |
+
+Room state includes `closed` (bool), `next` (`{slug, title}` of the follow-up
+vote, or `null`), and, for the requesting participant, `you.nextSessionToken`
+(plus `you.nextCreatorToken` for the creator) so a browser can move into the
+follow-up vote without re-joining. Other participants' ballots are never
+included — only your own, as `you.ballot`.
+
+### WebSocket
+
+Connect to `/api/votes/{slug}/ws`, then send an auth message as the **first**
+message:
+
+```json
+{"type": "auth", "token": "<sessionToken>"}
+```
+
+An empty or unknown token connects you as a spectator. Tokens go in this
+message rather than the URL so they never end up in proxy or tunnel access
+logs. A connection that doesn't send a valid auth message within 5 seconds is
+closed with code 1008 (policy violation). After auth, the server pushes your
+personalized room state as a JSON text message immediately and again after
+every change.
 
 ## Development
 
@@ -106,7 +207,7 @@ Run the tests:
 
 ```sh
 go test ./...        # backend: domain, store, and full-lifecycle API tests
-cd web && npm test   # frontend: budget-math unit tests (Vitest)
+cd web && npm test   # frontend: budget math, routing, session/next-vote handoff (Vitest)
 ```
 
 ### Configuration
@@ -150,6 +251,16 @@ go build ./cmd/quickvote
 ```
 
 The Docker build does this automatically in its multi-stage pipeline.
+
+### Screenshots
+
+The images in `docs/screenshots/` come from a throwaway local instance seeded
+with sample data (`scripts/screenshots.mjs`; it builds the UI, starts a server
+on `127.0.0.1:18090` with a temp database, and deletes it afterwards):
+
+```sh
+npx -y -p playwright@1.62.0 node scripts/screenshots.mjs
+```
 
 ## Reverse proxy note
 
