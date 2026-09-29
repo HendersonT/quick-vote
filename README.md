@@ -273,7 +273,8 @@ The Docker build does this automatically in its multi-stage pipeline.
 
 The images in `docs/screenshots/` come from a throwaway local instance seeded
 with sample data (`scripts/screenshots.mjs`; it builds the UI, starts a server
-on `127.0.0.1:18090` with a temp database, and deletes it afterwards):
+on `127.0.0.1:18090` with a temp database, and afterwards deletes the database
+and the UI build it copied into `webembed/dist`):
 
 ```sh
 npx -y -p playwright@1.62.0 node scripts/screenshots.mjs

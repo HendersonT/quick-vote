@@ -12,7 +12,16 @@
 // Pass --skip-web-build to reuse an existing web/dist build.
 
 import { spawn, execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -93,20 +102,27 @@ async function newPage(browser, slug, session) {
 
 try {
   // Embedding the real UI means copying it over webembed/dist, whose
-  // index.html is a committed placeholder: put the placeholder back once the
-  // binary is built so the script leaves the working tree clean.
-  const placeholder = join(root, "webembed", "dist", "index.html");
+  // index.html is a committed placeholder. Once the binary is built, delete
+  // everything the copy added (the hashed assets would otherwise pile up and
+  // be embedded into every later `go build`) and put the placeholder back,
+  // leaving webembed/dist exactly as it was.
+  const embedDir = join(root, "webembed", "dist");
+  const placeholder = join(embedDir, "index.html");
   const placeholderHTML = readFileSync(placeholder);
+  const preexisting = new Set(readdirSync(embedDir, { recursive: true }));
   const bin = join(tmp, "quickvote");
   try {
     if (!process.argv.includes("--skip-web-build")) {
       execFileSync("npm", ["run", "build"], { cwd: join(root, "web"), stdio: "inherit" });
     }
-    cpSync(join(root, "web", "dist"), join(root, "webembed", "dist"), { recursive: true });
+    cpSync(join(root, "web", "dist"), embedDir, { recursive: true });
     // Build then exec the binary (rather than `go run`) so killing it really
     // stops the server instead of orphaning go run's child.
     execFileSync("go", ["build", "-o", bin, "./cmd/quickvote"], { cwd: root, stdio: "inherit" });
   } finally {
+    for (const rel of readdirSync(embedDir, { recursive: true })) {
+      if (!preexisting.has(rel)) rmSync(join(embedDir, rel), { recursive: true, force: true });
+    }
     writeFileSync(placeholder, placeholderHTML);
   }
   server = spawn(bin, ["-addr", addr, "-db", join(tmp, "demo.db")], { stdio: "inherit" });
@@ -168,7 +184,9 @@ try {
     await api("POST", `/api/votes/${slug}/advance`, { body: {}, token: alice, creatorToken });
     await bobPage.waitForSelector(".phase-results");
     await bobPage.waitForLoadState("networkidle");
-    await bobPage.screenshot({ path: join(outDir, "results.png") });
+    // Full page: the results screen runs past the viewport, and a viewport
+    // shot would cut off the export and re-vote buttons.
+    await bobPage.screenshot({ path: join(outDir, "results.png"), fullPage: true });
   } finally {
     await browser.close();
   }
