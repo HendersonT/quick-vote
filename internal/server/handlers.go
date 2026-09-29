@@ -131,13 +131,9 @@ func (s *Server) handleCreateVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	title := strings.TrimSpace(req.Title)
-	if title == "" {
-		writeError(w, http.StatusBadRequest, "title is required")
-		return
-	}
-	if len(title) > 200 {
-		writeError(w, http.StatusBadRequest, "title must be at most 200 characters")
+	title, msg := validateTitle(req.Title)
+	if msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 
@@ -157,34 +153,15 @@ func (s *Server) handleCreateVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	settingsJSON, err := json.Marshal(settings)
+	v, err := s.newVoteRow(title, settings)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-
-	now := s.now()
-	slug := ids.NewSlug()
-	creatorToken := ids.NewToken()
+	slug, creatorToken, deadline := v.Slug, v.CreatorToken, v.PhaseDeadline
 	sessionToken := ids.NewToken()
 	participantID := ids.NewToken()
 
-	var deadline *int64
-	if settings.SuggestTimerSecs > 0 {
-		d := now.Add(time.Duration(settings.SuggestTimerSecs) * time.Second).Unix()
-		deadline = &d
-	}
-
-	v := store.VoteRow{
-		Slug:          slug,
-		Title:         title,
-		Phase:         string(domain.PhaseSuggesting),
-		Settings:      string(settingsJSON),
-		CreatorToken:  creatorToken,
-		PhaseDeadline: deadline,
-		Results:       nil,
-		CreatedAt:     now.Unix(),
-	}
 	if err := s.store.CreateVote(v); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create vote")
 		return
@@ -196,7 +173,7 @@ func (s *Server) handleCreateVote(w http.ResponseWriter, r *http.Request) {
 		Name:      creatorName,
 		Token:     sessionToken,
 		IsCreator: true,
-		JoinedAt:  now.Unix(),
+		JoinedAt:  v.CreatedAt,
 	}
 	if err := s.store.AddParticipant(p); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to add creator")
@@ -213,6 +190,46 @@ func (s *Server) handleCreateVote(w http.ResponseWriter, r *http.Request) {
 		SessionToken: sessionToken,
 		State:        state,
 	})
+}
+
+// validateTitle trims a vote title and checks it is 1–200 characters. It
+// returns the trimmed title, or a non-empty 400 message when invalid. Shared
+// by create and next-vote so both enforce identical rules.
+func validateTitle(raw string) (string, string) {
+	title := strings.TrimSpace(raw)
+	if title == "" {
+		return "", "title is required"
+	}
+	if len(title) > 200 {
+		return "", "title must be at most 200 characters"
+	}
+	return title, ""
+}
+
+// newVoteRow builds a fresh suggest-phase vote (new slug and creator token)
+// with the given already-validated settings, arming the suggest deadline from
+// s.now() when the settings ask for a timer. The caller persists it and then
+// calls armOrClear with its PhaseDeadline.
+func (s *Server) newVoteRow(title string, settings domain.Settings) (store.VoteRow, error) {
+	settingsJSON, err := json.Marshal(settings)
+	if err != nil {
+		return store.VoteRow{}, err
+	}
+	now := s.now()
+	var deadline *int64
+	if settings.SuggestTimerSecs > 0 {
+		d := now.Add(time.Duration(settings.SuggestTimerSecs) * time.Second).Unix()
+		deadline = &d
+	}
+	return store.VoteRow{
+		Slug:          ids.NewSlug(),
+		Title:         title,
+		Phase:         string(domain.PhaseSuggesting),
+		Settings:      string(settingsJSON),
+		CreatorToken:  ids.NewToken(),
+		PhaseDeadline: deadline,
+		CreatedAt:     now.Unix(),
+	}, nil
 }
 
 type joinRequest struct {

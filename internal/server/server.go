@@ -196,6 +196,9 @@ func (s *Server) routes() chi.Router {
 			r.With(write...).Delete("/participants/{id}", s.handleRemoveParticipant)
 			r.With(write...).Post("/close", s.handleClose)
 			r.With(write...).Post("/reopen", s.handleReopen)
+			// Starting a follow-up vote creates a vote, so it shares the
+			// creation throttle.
+			r.With(write...).With(s.limit(s.createLimit, s.createGlobal)).Post("/next", s.handleNextVote)
 			r.With(s.limit(s.writeLimit, nil)).Get("/ws", s.handleWS)
 		})
 	})

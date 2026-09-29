@@ -71,6 +71,10 @@ func BuildRoomState(v store.VoteRow, parts []store.ParticipantRow, opts []store.
 		phaseDeadline = time.Unix(*v.PhaseDeadline, 0).UTC().Format(time.RFC3339)
 	}
 
+	// A successor whose row is gone (pruned) has no title; treat it as no
+	// successor rather than send clients to a 404.
+	hasNext := v.NextSlug != nil && v.NextTitle != nil
+
 	var you any
 	if requester != nil {
 		// A missing key means the participant never saved a ballot (null).
@@ -80,11 +84,26 @@ func BuildRoomState(v store.VoteRow, parts []store.ParticipantRow, opts []store.
 		if b, ok := ballots[requester.ID]; ok {
 			ballot = b
 		}
-		you = map[string]any{
+		y := map[string]any{
 			"participantId": requester.ID,
 			"isCreator":     requester.IsCreator,
 			"ballot":        ballot,
 		}
+		// Handoff credentials for the successor vote (spec B4) go only to
+		// the participant they belong to: their own new session token, and
+		// the new creator token only to this vote's creator.
+		if hasNext && requester.NextToken != nil {
+			y["nextSessionToken"] = *requester.NextToken
+			if requester.IsCreator && v.NextCreatorToken != nil {
+				y["nextCreatorToken"] = *v.NextCreatorToken
+			}
+		}
+		you = y
+	}
+
+	var next any
+	if hasNext {
+		next = map[string]any{"slug": *v.NextSlug, "title": *v.NextTitle}
 	}
 
 	var results any
@@ -124,6 +143,9 @@ func BuildRoomState(v store.VoteRow, parts []store.ParticipantRow, opts []store.
 		// closed is true while the creator has closed the room (spec B3):
 		// every write is rejected until it is reopened.
 		"closed": v.ClosedAt != nil,
+		// next links the follow-up vote started with this group (spec B4),
+		// or null.
+		"next": next,
 	}
 }
 

@@ -938,3 +938,63 @@ func TestSetClosed(t *testing.T) {
 		t.Fatalf("SetClosed(missing) = %v, want ErrNotFound", err)
 	}
 }
+
+func TestCreateNextVoteLinksAndCarries(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.CreateVote(VoteRow{Slug: "src", Title: "Src", Phase: "results", Settings: "{}", CreatorToken: "ct", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []ParticipantRow{
+		{ID: "p1", VoteSlug: "src", Name: "Alice", Token: "tok1", IsCreator: true, JoinedAt: 1},
+		{ID: "p2", VoteSlug: "src", Name: "Bob", Token: "tok2", JoinedAt: 2},
+	} {
+		if err := st.AddParticipant(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	next := VoteRow{Slug: "nxt", Title: "Round two", Phase: "suggesting", Settings: "{}", CreatorToken: "ct2", CreatedAt: 5}
+	carried := map[string]ParticipantRow{
+		"p1": {ID: "n1", VoteSlug: "nxt", Name: "Alice", Token: "ntok1", IsCreator: true, JoinedAt: 5},
+		"p2": {ID: "n2", VoteSlug: "nxt", Name: "Bob", Token: "ntok2", JoinedAt: 5},
+	}
+	if err := st.CreateNextVote("src", next, carried); err != nil {
+		t.Fatalf("CreateNextVote: %v", err)
+	}
+
+	src, err := st.GetVote("src")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.NextSlug == nil || *src.NextSlug != "nxt" || src.NextCreatorToken == nil || *src.NextCreatorToken != "ct2" {
+		t.Fatalf("source link: next=%v creator=%v", src.NextSlug, src.NextCreatorToken)
+	}
+	if src.NextTitle == nil || *src.NextTitle != "Round two" {
+		t.Fatalf("NextTitle = %v, want Round two", src.NextTitle)
+	}
+	bob, err := st.ParticipantByToken("src", "tok2")
+	if err != nil || bob.NextToken == nil || *bob.NextToken != "ntok2" {
+		t.Fatalf("Bob's next token: %+v, %v", bob.NextToken, err)
+	}
+	parts, err := st.Participants("nxt")
+	if err != nil || len(parts) != 2 {
+		t.Fatalf("next participants = %+v, %v", parts, err)
+	}
+	if p, err := st.ParticipantByToken("nxt", "ntok1"); err != nil || !p.IsCreator {
+		t.Fatalf("carried creator: %+v, %v", p, err)
+	}
+	if v, err := st.GetVote("nxt"); err != nil || v.NextTitle != nil {
+		t.Fatalf("next vote: %+v, %v", v, err)
+	}
+
+	again := VoteRow{Slug: "nxt2", Title: "Again", Phase: "suggesting", Settings: "{}", CreatorToken: "ct3", CreatedAt: 6}
+	if err := st.CreateNextVote("src", again, map[string]ParticipantRow{}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second successor: %v, want ErrConflict", err)
+	}
+	if _, err := st.GetVote("nxt2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("conflicting successor must not be created: %v", err)
+	}
+	if err := st.CreateNextVote("missing", again, map[string]ParticipantRow{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing source: %v, want ErrNotFound", err)
+	}
+}

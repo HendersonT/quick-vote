@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -149,4 +150,106 @@ func (s *Server) handleReopen(w http.ResponseWriter, r *http.Request) {
 	}
 	s.changed(slug)
 	s.writeState(w, slug, &creator)
+}
+
+type nextVoteRequest struct {
+	Title    string         `json:"title"`
+	Settings *settingsPatch `json:"settings"`
+}
+
+// handleNextVote implements POST /api/votes/{slug}/next (spec B4): the
+// creator starts a follow-up vote with the same group. Every current
+// (non-removed) participant is carried over with a fresh participant ID and
+// session token; the old room then advertises the successor and hands each
+// participant their own new token, so the group moves on without re-joining
+// and without any old token working in the new vote. Settings default to
+// this vote's, with an optional patch applied over them.
+func (s *Server) handleNextVote(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	defer s.lockSlug(slug)()
+	v, ok := s.getVoteOr404(w, slug)
+	if !ok {
+		return
+	}
+	if rejectIfClosed(w, v) {
+		return
+	}
+	caller, ok := s.requireCreator(w, r, v)
+	if !ok {
+		return
+	}
+	if v.NextSlug != nil {
+		writeError(w, http.StatusConflict, "this vote already has a follow-up")
+		return
+	}
+
+	var req nextVoteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	title, msg := validateTitle(req.Title)
+	if msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	base, err := parseSettings(v)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	settings := req.Settings.applyTo(base)
+	if err := settings.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	next, err := s.newVoteRow(title, settings)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	// Participants excludes removed members, and names are already unique
+	// within the source vote, so the carried group is valid as-is and within
+	// the participant cap.
+	parts, err := s.store.Participants(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	carried := make(map[string]store.ParticipantRow, len(parts))
+	for _, old := range parts {
+		carried[old.ID] = store.ParticipantRow{
+			ID:        ids.NewToken(),
+			VoteSlug:  next.Slug,
+			Name:      old.Name,
+			Token:     ids.NewToken(),
+			IsCreator: old.IsCreator,
+			JoinedAt:  next.CreatedAt,
+		}
+	}
+	if err := s.store.CreateNextVote(slug, next, carried); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, "this vote already has a follow-up")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	s.armOrClear(next.Slug, next.PhaseDeadline)
+	// The old room broadcasts the handoff to everyone still watching it.
+	s.changed(slug)
+
+	me := carried[caller.ID]
+	d, err := s.loadRoom(next.Slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusCreated, createVoteResponse{
+		Slug:         next.Slug,
+		CreatorToken: next.CreatorToken,
+		SessionToken: me.Token,
+		State:        d.stateFor(me.Token),
+	})
 }

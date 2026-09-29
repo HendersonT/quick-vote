@@ -21,6 +21,9 @@ var ErrNotFound = errors.New("not found")
 // removing them would leave it unmanageable.
 var ErrIsCreator = errors.New("cannot remove the creator")
 
+// ErrConflict signals a state conflict (e.g. a successor vote already exists).
+var ErrConflict = errors.New("conflict")
+
 const schema = `
 CREATE TABLE IF NOT EXISTS votes (
   slug TEXT PRIMARY KEY, title TEXT NOT NULL,
@@ -133,6 +136,10 @@ type VoteRow struct {
 	// NextCreatorToken is the successor's creator token, kept so it can be
 	// handed only to this vote's creator.
 	NextCreatorToken *string
+	// NextTitle is the successor's title, read-only: GetVote joins it in so
+	// the room state can label the handoff link without another query. nil
+	// when there is no successor (or it has since been pruned).
+	NextTitle *string
 }
 
 // ParticipantRow mirrors the participants table.
@@ -301,14 +308,16 @@ func (s *Store) GetVote(slug string) (VoteRow, error) {
 	defer s.mu.Unlock()
 
 	row := s.db.QueryRow(
-		`SELECT slug, title, phase, settings, creator_token, phase_deadline, results, created_at, active_options,
-		   COALESCE(last_activity, created_at), closed_at, next_slug, next_creator_token
-		 FROM votes WHERE slug = ?`, slug,
+		`SELECT v.slug, v.title, v.phase, v.settings, v.creator_token, v.phase_deadline, v.results, v.created_at,
+		   v.active_options, COALESCE(v.last_activity, v.created_at), v.closed_at, v.next_slug, v.next_creator_token,
+		   n.title
+		 FROM votes v LEFT JOIN votes n ON n.slug = v.next_slug
+		 WHERE v.slug = ?`, slug,
 	)
 	var v VoteRow
 	if err := row.Scan(&v.Slug, &v.Title, &v.Phase, &v.Settings, &v.CreatorToken,
 		&v.PhaseDeadline, &v.Results, &v.CreatedAt, &v.ActiveOptions,
-		&v.LastActivity, &v.ClosedAt, &v.NextSlug, &v.NextCreatorToken); err != nil {
+		&v.LastActivity, &v.ClosedAt, &v.NextSlug, &v.NextCreatorToken, &v.NextTitle); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return VoteRow{}, ErrNotFound
 		}
@@ -343,6 +352,105 @@ func (s *Store) UpdateVote(v VoteRow) error {
 	}
 	if n == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// CreateNextVote atomically creates next (with its participants) and links
+// it from srcSlug: sets votes.next_slug and next_creator_token on the source
+// and participants.next_token for each carried-over source participant.
+// carried maps source participant ID -> new participant row. Returns
+// ErrConflict if the source already has a successor, ErrNotFound if the
+// source vote does not exist.
+//
+// One transaction, so a crash can't leave a successor the old room never
+// links to, or a link to participants that were never created.
+func (s *Store) CreateNextVote(srcSlug string, next VoteRow, carried map[string]ParticipantRow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin next vote: %w", err)
+	}
+	defer tx.Rollback()
+
+	var existing *string
+	if err := tx.QueryRow(`SELECT next_slug FROM votes WHERE slug = ?`, srcSlug).Scan(&existing); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lookup source vote: %w", err)
+	}
+	if existing != nil {
+		return ErrConflict
+	}
+
+	if next.LastActivity == 0 {
+		next.LastActivity = next.CreatedAt
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO votes (slug, title, phase, settings, creator_token, phase_deadline, results, created_at, active_options,
+		   last_activity, closed_at, next_slug, next_creator_token)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		next.Slug, next.Title, next.Phase, next.Settings, next.CreatorToken, next.PhaseDeadline, next.Results,
+		next.CreatedAt, next.ActiveOptions, next.LastActivity, next.ClosedAt, next.NextSlug, next.NextCreatorToken,
+	); err != nil {
+		return fmt.Errorf("create next vote: %w", err)
+	}
+
+	// Insert in source join order so the new room lists the group the same
+	// way (Participants orders by joined_at, then rowid).
+	rows, err := tx.Query(
+		`SELECT id FROM participants WHERE vote_slug = ? ORDER BY joined_at ASC, rowid ASC`, srcSlug,
+	)
+	if err != nil {
+		return fmt.Errorf("list source participants: %w", err)
+	}
+	var order []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan source participant: %w", err)
+		}
+		if _, ok := carried[id]; ok {
+			order = append(order, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("list source participants: %w", err)
+	}
+	rows.Close()
+	if len(order) != len(carried) {
+		return fmt.Errorf("create next vote: carried participant not in source vote %s", srcSlug)
+	}
+
+	for _, srcID := range order {
+		p := carried[srcID]
+		if _, err := tx.Exec(
+			`INSERT INTO participants (id, vote_slug, name, token, is_creator, wants_revote, joined_at, done_suggesting)
+			 VALUES (?, ?, ?, ?, ?, 0, ?, 0)`,
+			p.ID, next.Slug, p.Name, p.Token, boolToInt(p.IsCreator), p.JoinedAt,
+		); err != nil {
+			return fmt.Errorf("carry participant: %w", err)
+		}
+		if _, err := tx.Exec(
+			`UPDATE participants SET next_token = ? WHERE id = ? AND vote_slug = ?`, p.Token, srcID, srcSlug,
+		); err != nil {
+			return fmt.Errorf("set next token: %w", err)
+		}
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE votes SET next_slug = ?, next_creator_token = ? WHERE slug = ?`,
+		next.Slug, next.CreatorToken, srcSlug,
+	); err != nil {
+		return fmt.Errorf("link next vote: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit next vote: %w", err)
 	}
 	return nil
 }

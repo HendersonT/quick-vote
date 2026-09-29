@@ -322,3 +322,133 @@ func TestCloseBlocksVotingAndResultsWrites(t *testing.T) {
 		t.Fatalf("revote while closed: %d, want 409", rec.Code)
 	}
 }
+
+func TestNextVoteCarriesGroupWithFreshTokens(t *testing.T) {
+	s := newTestServer(t)
+	slug, ct, aliceTok, _ := createVote(t, s, map[string]any{"creditsPerOption": 7})
+	bobTok := join(t, s, slug, "Bob")
+
+	rec, out := doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/next", map[string]any{"title": "Round two"}, aliceTok, ct)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("next: %d %s", rec.Code, rec.Body.String())
+	}
+	next := out["slug"].(string)
+	newState := out["state"].(map[string]any)
+	if newState["title"] != "Round two" || newState["settings"].(map[string]any)["creditsPerOption"] != float64(7) {
+		t.Fatalf("next vote title/settings not carried: %v", newState)
+	}
+	if n := len(newState["participants"].([]any)); n != 2 {
+		t.Fatalf("carried participants = %d, want 2", n)
+	}
+	// The caller's own response carries their new creator credentials.
+	if out["creatorToken"] == "" || out["creatorToken"] == ct || out["sessionToken"] == "" || out["sessionToken"] == aliceTok {
+		t.Fatalf("caller needs fresh creator/session tokens: %v", out)
+	}
+	if you := newState["you"].(map[string]any); you["isCreator"] != true {
+		t.Fatalf("caller must be creator of the next vote: %v", you)
+	}
+
+	bobOld := getState(t, s, slug, bobTok)
+	if bobOld["next"].(map[string]any)["slug"] != next || bobOld["next"].(map[string]any)["title"] != "Round two" {
+		t.Fatalf("old vote next = %v", bobOld["next"])
+	}
+	bobYou := bobOld["you"].(map[string]any)
+	bobNewTok, _ := bobYou["nextSessionToken"].(string)
+	if bobNewTok == "" || bobNewTok == bobTok {
+		t.Fatalf("Bob needs a fresh token, got %q", bobNewTok)
+	}
+	if _, ok := bobYou["nextCreatorToken"]; ok {
+		t.Fatal("non-creator must not receive the next creator token")
+	}
+	if got := getState(t, s, next, bobNewTok); got["you"] == nil {
+		t.Fatal("Bob's next token doesn't authenticate in the new vote")
+	}
+	if got := getState(t, s, next, bobTok); got["you"] != nil {
+		t.Fatal("old token must not authenticate in the new vote")
+	}
+	aliceYou := getState(t, s, slug, aliceTok)["you"].(map[string]any)
+	if aliceYou["nextCreatorToken"] != out["creatorToken"] || aliceYou["nextSessionToken"] != out["sessionToken"] {
+		t.Fatalf("creator's old-vote handoff = %v, want response tokens", aliceYou)
+	}
+	// Spectators see the link but no tokens.
+	spec := getState(t, s, slug, "")
+	if spec["next"] == nil || spec["you"] != nil {
+		t.Fatalf("spectator view: next=%v you=%v", spec["next"], spec["you"])
+	}
+	if rec, _ := doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/next", map[string]any{"title": "again"}, aliceTok, ct); rec.Code != http.StatusConflict {
+		t.Fatalf("second successor: %d, want 409", rec.Code)
+	}
+	// The new vote itself has no successor yet.
+	if got := getState(t, s, next, bobNewTok); got["next"] != nil {
+		t.Fatalf("new vote next = %v, want null", got["next"])
+	}
+}
+
+func TestNextVoteSkipsRemovedParticipants(t *testing.T) {
+	s := newTestServer(t)
+	slug, ct, aliceTok, _ := createVote(t, s, nil)
+	bobTok := join(t, s, slug, "Bob")
+	join(t, s, slug, "Carol")
+	bobID := participantID(t, getState(t, s, slug, bobTok))
+	doHdr(t, s, http.MethodDelete, "/api/votes/"+slug+"/participants/"+bobID, nil, aliceTok, ct)
+
+	_, out := doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/next", map[string]any{"title": "R2"}, aliceTok, ct)
+	names := []string{}
+	for _, p := range out["state"].(map[string]any)["participants"].([]any) {
+		names = append(names, p.(map[string]any)["name"].(string))
+	}
+	if len(names) != 2 || names[0] != "Alice" || names[1] != "Carol" {
+		t.Fatalf("carried %v, want [Alice Carol]", names)
+	}
+	// The removed participant's old token gets neither the handoff nor a
+	// seat in the new vote.
+	if got := getState(t, s, slug, bobTok); got["you"] != nil {
+		t.Fatalf("removed participant still authenticates: %v", got["you"])
+	}
+}
+
+func TestNextVoteSettingsPatchAndAuth(t *testing.T) {
+	s := newTestServer(t)
+	slug, ct, aliceTok, _ := createVote(t, s, map[string]any{"creditsPerOption": 7, "maxSuggestionsPerUser": 2})
+	bobTok := join(t, s, slug, "Bob")
+	path := "/api/votes/" + slug + "/next"
+
+	if rec, _ := doHdr(t, s, http.MethodPost, path, map[string]any{"title": "x"}, "", ct); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no session: %d, want 401", rec.Code)
+	}
+	if rec, _ := doHdr(t, s, http.MethodPost, path, map[string]any{"title": "x"}, bobTok, ct); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-creator: %d, want 403", rec.Code)
+	}
+	if rec, _ := doHdr(t, s, http.MethodPost, path, map[string]any{"title": "x"}, aliceTok, "wrong"); rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong creator token: %d, want 403", rec.Code)
+	}
+
+	rec, out := doHdr(t, s, http.MethodPost, path, map[string]any{"title": "  R2  ", "settings": map[string]any{"creditsPerOption": 3}}, aliceTok, ct)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("next: %d %s", rec.Code, rec.Body.String())
+	}
+	st := out["state"].(map[string]any)
+	settings := st["settings"].(map[string]any)
+	if st["title"] != "R2" || settings["creditsPerOption"] != float64(3) || settings["maxSuggestionsPerUser"] != float64(2) {
+		t.Fatalf("patch over source settings: title=%v settings=%v", st["title"], settings)
+	}
+	if st["phase"] != "suggesting" {
+		t.Fatalf("next vote phase = %v, want suggesting", st["phase"])
+	}
+}
+
+func TestNextVoteValidationAndClosed(t *testing.T) {
+	s := newTestServer(t)
+	slug, ct, aliceTok, _ := createVote(t, s, nil)
+	path := "/api/votes/" + slug + "/next"
+	if rec, _ := doHdr(t, s, http.MethodPost, path, map[string]any{"title": "  "}, aliceTok, ct); rec.Code != http.StatusBadRequest {
+		t.Fatalf("blank title: %d, want 400", rec.Code)
+	}
+	if rec, _ := doHdr(t, s, http.MethodPost, path, map[string]any{"title": "x", "settings": map[string]any{"creditsPerOption": 0}}, aliceTok, ct); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid settings: %d, want 400", rec.Code)
+	}
+	doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/close", nil, aliceTok, ct)
+	if rec, _ := doHdr(t, s, http.MethodPost, path, map[string]any{"title": "x"}, aliceTok, ct); rec.Code != http.StatusConflict {
+		t.Fatalf("next on closed vote: %d, want 409", rec.Code)
+	}
+}
