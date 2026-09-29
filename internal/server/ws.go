@@ -9,8 +9,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
-
-	"github.com/HendersonT/quick-vote/internal/store"
 )
 
 const (
@@ -259,13 +257,24 @@ func (s *Server) wsWritePump(c *wsConn) {
 }
 
 // pushSnapshot builds c's personalized room-state snapshot and enqueues it
-// for delivery. If the connection's send buffer is full (a stuck client),
-// the connection is dropped rather than blocking the caller.
+// for delivery. It is used for the initial push on connect; room changes go
+// through broadcast, which shares one room load across all connections.
 func (s *Server) pushSnapshot(c *wsConn) {
-	data, ok := s.buildSnapshotJSON(c.slug, c.token)
-	if !ok {
+	d, err := s.loadRoom(c.slug)
+	if err != nil {
 		return
 	}
+	data, err := json.Marshal(d.stateFor(c.token))
+	if err != nil {
+		return
+	}
+	s.enqueue(c, data)
+}
+
+// enqueue hands a marshaled snapshot to c's write pump. If the connection's
+// send buffer is full (a stuck client), the connection is dropped rather
+// than blocking the caller.
+func (s *Server) enqueue(c *wsConn, data []byte) {
 	select {
 	case c.send <- data:
 	case <-c.done:
@@ -277,48 +286,26 @@ func (s *Server) pushSnapshot(c *wsConn) {
 	}
 }
 
-// buildSnapshotJSON loads the current room state for slug, personalized for
-// the participant identified by token (spectator if token is empty or
-// invalid), and marshals it to JSON.
-func (s *Server) buildSnapshotJSON(slug, token string) ([]byte, bool) {
-	v, err := s.store.GetVote(slug)
-	if err != nil {
-		return nil, false
-	}
-	parts, err := s.store.Participants(slug)
-	if err != nil {
-		return nil, false
-	}
-	opts, err := s.store.Options(slug)
-	if err != nil {
-		return nil, false
-	}
-	ballots, err := s.store.Ballots(slug)
-	if err != nil {
-		return nil, false
-	}
-
-	var requester *store.ParticipantRow
-	if token != "" {
-		if p, err := s.store.ParticipantByToken(slug, token); err == nil {
-			requester = &p
-		}
-	}
-
-	state := BuildRoomState(v, parts, opts, ballots, requester)
-	data, err := json.Marshal(state)
-	if err != nil {
-		return nil, false
-	}
-	return data, true
-}
-
 // broadcast pushes a fresh personalized snapshot to every connection
 // currently registered for slug. Wired as the Server's onChange hook in
 // New, so every call to s.changed(slug) fans out to live WebSocket clients.
+// Room data is loaded once and personalized in memory per connection, so the
+// store cost of a broadcast doesn't grow with the number of watchers.
 func (s *Server) broadcast(slug string) {
-	for _, c := range s.hub.connsFor(slug) {
-		s.pushSnapshot(c)
+	conns := s.hub.connsFor(slug)
+	if len(conns) == 0 {
+		return
+	}
+	d, err := s.loadRoom(slug)
+	if err != nil {
+		return
+	}
+	for _, c := range conns {
+		data, err := json.Marshal(d.stateFor(c.token))
+		if err != nil {
+			continue
+		}
+		s.enqueue(c, data)
 	}
 }
 

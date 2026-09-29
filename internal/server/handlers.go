@@ -324,7 +324,7 @@ func dedupeName(name string, existing []store.ParticipantRow) string {
 // ("you": null) rather than an error.
 func (s *Server) handleGetVote(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
-	v, err := s.store.GetVote(slug)
+	d, err := s.loadRoom(slug)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "vote not found")
@@ -333,33 +333,7 @@ func (s *Server) handleGetVote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-
-	parts, err := s.store.Participants(slug)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	opts, err := s.store.Options(slug)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	ballots, err := s.store.Ballots(slug)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-
-	var requester *store.ParticipantRow
-	if token := bearerToken(r); token != "" {
-		if p, err := s.store.ParticipantByToken(slug, token); err == nil {
-			requester = &p
-		}
-	}
-
-	state := BuildRoomState(v, parts, opts, ballots, requester)
-
-	writeJSON(w, http.StatusOK, state)
+	writeJSON(w, http.StatusOK, d.stateFor(bearerToken(r)))
 }
 
 // getVoteOr404 loads a vote, writing a 404/500 error response and returning
@@ -408,27 +382,12 @@ func parseSettings(v store.VoteRow) (domain.Settings, error) {
 // writeState reloads the full room state for slug and writes it as a 200
 // response, personalized for requester (nil = spectator).
 func (s *Server) writeState(w http.ResponseWriter, slug string, requester *store.ParticipantRow) {
-	v, err := s.store.GetVote(slug)
+	d, err := s.loadRoom(slug)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	parts, err := s.store.Participants(slug)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	opts, err := s.store.Options(slug)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	ballots, err := s.store.Ballots(slug)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	writeJSON(w, http.StatusOK, BuildRoomState(v, parts, opts, ballots, requester))
+	writeJSON(w, http.StatusOK, d.stateForParticipant(requester))
 }
 
 type suggestionRequest struct {
