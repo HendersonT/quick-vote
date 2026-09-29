@@ -74,13 +74,25 @@ func (s *Server) handleRemoveParticipant(w http.ResponseWriter, r *http.Request)
 	}
 
 	// The removed participant may have been the last holdout for an
-	// all-done / all-voted auto-advance.
+	// all-done / all-voted auto-advance, or for the re-vote threshold (which
+	// also shrinks with the group).
 	if settings, err := parseSettings(v); err == nil {
 		switch v.Phase {
 		case string(domain.PhaseSuggesting):
 			s.maybeAutoAdvanceSuggest(slug, settings)
 		case string(domain.PhaseVoting):
 			s.maybeAutoAdvanceVote(slug, settings)
+		case string(domain.PhaseResults):
+			// Removal only touches participant rows, so v is still current.
+			if parts, err := s.store.Participants(slug); err == nil && revoteMet(parts, settings) {
+				if err := s.startRevote(v, settings); err != nil {
+					// The removal itself is committed: still broadcast it,
+					// so the removed participant's sockets are downgraded.
+					s.changed(slug)
+					writeError(w, http.StatusInternalServerError, "internal error")
+					return
+				}
+			}
 		}
 	}
 	s.changed(slug)

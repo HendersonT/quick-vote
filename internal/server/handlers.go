@@ -716,41 +716,56 @@ func (s *Server) handleRevote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	calls := 0
-	for _, pp := range parts {
-		if pp.WantsRevote {
-			calls++
-		}
-	}
-	if domain.RevoteMet(calls, len(parts), settings.RevoteThresholdPct) {
-		if err := s.store.DeleteBallots(slug); err != nil {
+	if revoteMet(parts, settings) {
+		if err := s.startRevote(v, settings); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		if err := s.store.ResetRevotes(slug); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		v.Phase = string(domain.PhaseVoting)
-		v.Results = nil
-		v.PhaseDeadline = nil
-		// A threshold re-vote always resets to a clean slate: every option
-		// (not just whatever was active during a prior runoff) is back in
-		// play, per F5.
-		v.ActiveOptions = nil
-		if settings.VoteTimerSecs > 0 {
-			d := s.now().Add(time.Duration(settings.VoteTimerSecs) * time.Second).Unix()
-			v.PhaseDeadline = &d
-		}
-		if err := s.store.UpdateVote(v); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		s.armOrClear(slug, v.PhaseDeadline)
 	}
 
 	s.changed(slug)
 	s.writeState(w, r, slug, &p)
+}
+
+// revoteMet reports whether enough of parts (the current, non-removed
+// participants) have called for a re-vote under settings' threshold.
+func revoteMet(parts []store.ParticipantRow, settings domain.Settings) bool {
+	calls := 0
+	for _, p := range parts {
+		if p.WantsRevote {
+			calls++
+		}
+	}
+	return domain.RevoteMet(calls, len(parts), settings.RevoteThresholdPct)
+}
+
+// startRevote returns results-phase vote v to a fresh voting round: ballots
+// and re-vote calls are cleared and the vote timer is re-armed if configured.
+// Used when the re-vote threshold is met, whether by a new call or by a
+// removal shrinking the group.
+func (s *Server) startRevote(v store.VoteRow, settings domain.Settings) error {
+	if err := s.store.DeleteBallots(v.Slug); err != nil {
+		return err
+	}
+	if err := s.store.ResetRevotes(v.Slug); err != nil {
+		return err
+	}
+	v.Phase = string(domain.PhaseVoting)
+	v.Results = nil
+	v.PhaseDeadline = nil
+	// A threshold re-vote always resets to a clean slate: every option
+	// (not just whatever was active during a prior runoff) is back in
+	// play, per F5.
+	v.ActiveOptions = nil
+	if settings.VoteTimerSecs > 0 {
+		d := s.now().Add(time.Duration(settings.VoteTimerSecs) * time.Second).Unix()
+		v.PhaseDeadline = &d
+	}
+	if err := s.store.UpdateVote(v); err != nil {
+		return err
+	}
+	s.armOrClear(v.Slug, v.PhaseDeadline)
+	return nil
 }
 
 // handleDoneSuggesting implements POST /api/votes/{slug}/done-suggesting: it

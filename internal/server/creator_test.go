@@ -633,3 +633,69 @@ func TestWebSocketNextCreatorTokenNeedsCreatorToken(t *testing.T) {
 		}
 	}
 }
+
+// resultsWithThreeVoters drives a manual vote (Alice creator, Bob, Carol;
+// re-vote threshold 50%) to the results phase with Alice's ballot cast.
+func resultsWithThreeVoters(t *testing.T, s *server.Server) (slug, ct, aliceTok, bobTok, carolTok string) {
+	t.Helper()
+	slug, ct, aliceTok, _ = createVote(t, s, map[string]any{
+		"suggestAdvanceMode": "manual", "voteAdvanceMode": "manual", "revoteThresholdPct": 50,
+	})
+	bobTok = join(t, s, slug, "Bob")
+	carolTok = join(t, s, slug, "Carol")
+	suggest(t, s, slug, aliceTok, "A")
+	suggest(t, s, slug, aliceTok, "B")
+	adv := "/api/votes/" + slug + "/advance"
+	doHdr(t, s, http.MethodPost, adv, map[string]any{}, aliceTok, ct)
+	ids := optionTitleToID(t, getState(t, s, slug, aliceTok))
+	if rec, _ := putBallot(t, s, slug, aliceTok, map[string]int{ids["A"]: 1}); rec.Code != http.StatusOK {
+		t.Fatalf("ballot: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec, st := doHdr(t, s, http.MethodPost, adv, map[string]any{}, aliceTok, ct); rec.Code != http.StatusOK || st["phase"] != "results" {
+		t.Fatalf("advance to results: %d phase=%v", rec.Code, st["phase"])
+	}
+	return slug, ct, aliceTok, bobTok, carolTok
+}
+
+// TestRemoveHoldoutTriggersRevote: removing a participant in the results
+// phase shrinks the re-vote threshold, so the removed person may have been
+// the holdout. The same threshold check as a re-vote call must run.
+func TestRemoveHoldoutTriggersRevote(t *testing.T) {
+	s := newTestServer(t)
+	slug, ct, aliceTok, _, carolTok := resultsWithThreeVoters(t, s)
+	// 1 call of the 2 needed (50% of 3, rounded up).
+	if rec, st := doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/revote", map[string]any{}, aliceTok, ""); rec.Code != http.StatusOK || st["phase"] != "results" {
+		t.Fatalf("revote call: %d phase=%v", rec.Code, st["phase"])
+	}
+	carolID := participantID(t, getState(t, s, slug, carolTok))
+
+	rec, st := doHdr(t, s, http.MethodDelete, "/api/votes/"+slug+"/participants/"+carolID, nil, aliceTok, ct)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("remove: %d %s", rec.Code, rec.Body.String())
+	}
+	if st["phase"] != "voting" || st["results"] != nil {
+		t.Fatalf("phase=%v results=%v, want a fresh voting round (1 of 1 needed)", st["phase"], st["results"])
+	}
+	if b := st["you"].(map[string]any)["ballot"]; b != nil {
+		t.Fatalf("ballots must be cleared by the re-vote, Alice has %v", b)
+	}
+	for _, p := range st["participants"].([]any) {
+		if p.(map[string]any)["wantsRevote"] != false {
+			t.Fatalf("re-vote calls must reset: %v", p)
+		}
+	}
+}
+
+// TestRemoveRevoteCallerDoesNotTriggerRevote: the removed participant's own
+// call no longer counts, so removing a caller must not start a re-vote.
+func TestRemoveRevoteCallerDoesNotTriggerRevote(t *testing.T) {
+	s := newTestServer(t)
+	slug, ct, aliceTok, bobTok, _ := resultsWithThreeVoters(t, s)
+	doHdr(t, s, http.MethodPost, "/api/votes/"+slug+"/revote", map[string]any{}, bobTok, "")
+	bobID := participantID(t, getState(t, s, slug, bobTok))
+
+	_, st := doHdr(t, s, http.MethodDelete, "/api/votes/"+slug+"/participants/"+bobID, nil, aliceTok, ct)
+	if st["phase"] != "results" {
+		t.Fatalf("phase=%v, want results: the only caller was removed", st["phase"])
+	}
+}
