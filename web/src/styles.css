@@ -1205,6 +1205,78 @@ button:disabled {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Sharing: results actions, QR code, read-only results page (spec C1-C3) */
+/* ---------------------------------------------------------------------- */
+
+/* An <a> that looks like the primary button (e.g. "Download CSV"). */
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--touch);
+  padding: 0 var(--space-5);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.button-link:hover {
+  background: var(--color-accent-hover);
+  text-decoration: none;
+}
+
+.results-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+/* Full-width row under the share buttons in the flex-wrapped room meta. */
+.qr-panel {
+  flex-basis: 100%;
+}
+
+/* White quiet zone keeps the code scannable in dark mode. */
+.qr-code,
+.qr-placeholder {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.qr-placeholder {
+  aspect-ratio: 1;
+}
+
+.qr-error {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
+.results-pending {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.results-pending p {
+  color: var(--color-text-muted);
+}
+
+/* ---------------------------------------------------------------------- */
 /* Responsive                                                             */
 /* ---------------------------------------------------------------------- */
 

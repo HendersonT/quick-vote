@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { advanceVote, toggleRevote } from "../api";
+import { copyText } from "../clipboard";
 import type { RoomState } from "../types";
 
 interface ResultsPhaseProps {
@@ -9,18 +10,28 @@ interface ResultsPhaseProps {
   state: RoomState;
   /** True while the vote is closed: re-vote and tiebreak are disabled (spec B3). */
   closed?: boolean;
+  /**
+   * The shareable results page (spec C2): no session, so the re-vote panel
+   * and the creator's tiebreak buttons are hidden rather than shown disabled.
+   */
+  readOnly?: boolean;
 }
 
-/** Score bars, winner/tie banner, and the re-vote toggle for `results`. */
+/**
+ * Score bars, winner/tie banner, export/share actions, and the re-vote toggle
+ * for `results`.
+ */
 export default function ResultsPhase({
   slug,
   sessionToken,
   creatorToken,
   state,
   closed = false,
+  readOnly = false,
 }: ResultsPhaseProps) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   const results = state.results;
   const isCreator = state.you?.isCreator ?? false;
@@ -61,6 +72,14 @@ export default function ResultsPhase({
     }
   }
 
+  async function handleCopyResultsLink() {
+    const url = `${window.location.origin}/v/${slug}/results`;
+    if (await copyText(url, "Copy the results link")) {
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    }
+  }
+
   if (!results) {
     return <p className="phase-placeholder">Tallying results…</p>;
   }
@@ -80,7 +99,7 @@ export default function ResultsPhase({
       {results.tiePending ? (
         <div className="winner-banner tie-pending">
           <p>Tied — waiting for the creator to pick.</p>
-          {isCreator && (
+          {isCreator && !readOnly && (
             <ul className="tie-options">
               {results.tiedOptionIds.map((id) => (
                 <li key={id}>
@@ -146,23 +165,36 @@ export default function ResultsPhase({
         ))}
       </ul>
 
-      <div className="revote-panel">
-        <button type="button" onClick={handleToggleRevote} disabled={busy || closed}>
-          {wantsRevote ? "Withdraw call" : "Call for re-vote"}
+      <div className="results-actions">
+        {/* Plain same-origin link: the server's Content-Disposition makes it a
+            download, so no JS blob handling is needed (spec C1). */}
+        <a className="button-link" href={`/api/votes/${slug}/results.csv`}>
+          Download CSV
+        </a>
+        <button type="button" className="share-link" onClick={handleCopyResultsLink}>
+          {linkCopied ? "Copied!" : "Copy results link"}
         </button>
-        <span className="revote-count">
-          {results.revoteCalls} of {results.revoteNeeded} needed
-        </span>
-        {results.revoteCalls > 0 && (
-          <p className="revote-callers">
-            Called by:{" "}
-            {state.participants
-              .filter((p) => p.wantsRevote)
-              .map((p) => participantName(p.id))
-              .join(", ")}
-          </p>
-        )}
       </div>
+
+      {!readOnly && (
+        <div className="revote-panel">
+          <button type="button" onClick={handleToggleRevote} disabled={busy || closed}>
+            {wantsRevote ? "Withdraw call" : "Call for re-vote"}
+          </button>
+          <span className="revote-count">
+            {results.revoteCalls} of {results.revoteNeeded} needed
+          </span>
+          {results.revoteCalls > 0 && (
+            <p className="revote-callers">
+              Called by:{" "}
+              {state.participants
+                .filter((p) => p.wantsRevote)
+                .map((p) => participantName(p.id))
+                .join(", ")}
+            </p>
+          )}
+        </div>
+      )}
     </section>
   );
 }
