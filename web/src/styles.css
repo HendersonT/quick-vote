@@ -1323,3 +1323,42 @@ button:disabled {
     flex-direction: column;
   }
 }
+
+/* ---------------------------------------------------------------------- */
+/* Feedback footer (every page)                                           */
+/* ---------------------------------------------------------------------- */
+
+/* #root is a column so the footer sits at the bottom of short pages instead
+   of always below the fold (page shells are min-height: 100%). */
+#root {
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  min-height: 100%;
+}
+
+#root > * {
+  width: 100%;
+}
+
+#root > :not(.feedback-footer) {
+  flex: 1 0 auto;
+}
+
+.feedback-footer {
+  margin: var(--space-6) auto var(--space-4);
+  padding: 0 var(--space-4);
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.feedback-footer a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.feedback-footer a:hover {
+  color: var(--color-text);
+}

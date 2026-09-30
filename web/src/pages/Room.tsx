@@ -11,6 +11,7 @@ import ResultsPhase from "../components/ResultsPhase";
 import ShareLink from "../components/ShareLink";
 import SuggestPhase from "../components/SuggestPhase";
 import VotePhase from "../components/VotePhase";
+import type { Screen } from "../feedback";
 import {
   addToHistory,
   applyMove,
@@ -26,6 +27,8 @@ import { connectRoom } from "../ws";
 
 interface RoomProps {
   slug: string;
+  /** Reports the current screen (the phase once joined, else "other") for the feedback footer. */
+  onScreen?: (screen: Screen) => void;
 }
 
 // One-time notice carried across the next-vote navigation ("Moved to the
@@ -70,7 +73,7 @@ const PHASE_LABELS: Record<Phase, string> = {
   results: "Results",
 };
 
-export default function Room({ slug }: RoomProps) {
+export default function Room({ slug, onScreen }: RoomProps) {
   const [session, setSession] = useState<Session | null>(() => getSession(slug));
   const [state, setState] = useState<RoomState | null>(null);
   const [preJoin, setPreJoin] = useState<PreJoinInfo | null>(null);
@@ -89,6 +92,15 @@ export default function Room({ slug }: RoomProps) {
   useEffect(() => {
     dropNotice();
   }, []);
+
+  // Phase values (suggesting/voting/results) double as feedback screens.
+  // Room is keyed by slug, so this re-runs on every room mount and a stale
+  // phase never carries across votes.
+  const phase = state && session ? state.phase : null;
+  useEffect(() => {
+    onScreen?.(phase ?? "other");
+  }, [onScreen, phase]);
+
   // Guards against re-recording history on every WS broadcast — only the
   // first snapshot after (re)joining this room needs to bump it (F6).
   const historyRecorded = useRef(false);

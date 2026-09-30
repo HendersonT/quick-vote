@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactElement } from "react";
+import FeedbackFooter from "./components/FeedbackFooter";
+import type { Screen } from "./feedback";
 import Home from "./pages/Home";
 import ResultsView from "./pages/ResultsView";
 import Room from "./pages/Room";
@@ -59,16 +61,36 @@ export default function App() {
   const pathname = usePathname();
   const route = parseRoute(pathname);
 
+  // Room reports its phase up so the footer's bug link can say which screen
+  // the reporter was on; "other" until it has joined and loaded.
+  const [roomScreen, setRoomScreen] = useState<Screen>("other");
+
+  let page: ReactElement;
+  let screen: Screen;
   switch (route.name) {
     case "home":
-      return <Home />;
+      page = <Home />;
+      screen = "home";
+      break;
     case "room":
       // Keyed by slug so moving between votes (e.g. the next-vote handoff)
       // mounts a fresh room instead of carrying state across.
-      return <Room key={route.slug} slug={route.slug} />;
+      page = <Room key={route.slug} slug={route.slug} onScreen={setRoomScreen} />;
+      screen = roomScreen;
+      break;
     case "results":
-      return <ResultsView key={route.slug} slug={route.slug} />;
+      page = <ResultsView key={route.slug} slug={route.slug} />;
+      screen = "results-page";
+      break;
     default:
-      return <NotFound />;
+      page = <NotFound />;
+      screen = "other";
   }
+
+  return (
+    <>
+      {page}
+      <FeedbackFooter screen={screen} />
+    </>
+  );
 }
