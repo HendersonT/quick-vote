@@ -1,0 +1,25 @@
+name: Feature suggestion
+description: An idea to make Quick Vote better.
+title: "[Idea] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+  - type: input
+    id: version
+    attributes:
+      label: App version

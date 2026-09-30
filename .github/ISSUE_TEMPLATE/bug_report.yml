@@ -1,0 +1,43 @@
+name: Bug report
+description: Something in Quick Vote didn't work the way it should.
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **Please don't paste vote links or codes** — anyone with a link can join that vote.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Create a vote…\n2. …"
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+  - type: dropdown
+    id: screen
+    attributes:
+      label: Screen
+      options:
+        - Home
+        - Suggesting
+        - Voting
+        - Results
+        - Results page
+        - Other
+  - type: input
+    id: version
+    attributes:
+      label: App version
+  - type: input
+    id: browser
+    attributes:
+      label: Browser / device
