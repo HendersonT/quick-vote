@@ -113,6 +113,15 @@ keeps a local "recent votes" list (in `localStorage`, not synced anywhere) so
 you can find your way back to rooms you created or joined without keeping the
 link.
 
+## Feedback
+
+Found a bug or have an idea? Use the "Report a bug" and "Suggest a feature"
+links in the footer of every page, or open an issue from the repo's
+[issue forms](https://github.com/HendersonT/quick-vote/issues/new/choose).
+The in-app links prefill only the app version, the screen you were on, and your
+browser. Please don't paste vote links into issues: a vote's link is its only
+access control.
+
 ## Settings glossary
 
 Set at creation time (the last few live behind an "Advanced" fold):
@@ -233,6 +242,16 @@ Flags (with environment-variable fallbacks):
 | `-retention-days` | `QV_RETENTION_DAYS` | `90` | Delete votes after this many days without activity (checked at startup and daily). `0` disables. |
 | `-trusted-ip-header` | `QV_TRUSTED_IP_HEADER` | *(none)* | Header carrying the real client IP from your reverse proxy (`CF-Connecting-IP`, `X-Forwarded-For`, `X-Real-IP`). Rate limits are per client IP, so set this behind a proxy — but **only** if the server can't be reached except through that proxy, or clients can spoof it. |
 | `-allowed-origins` | `QV_ALLOWED_ORIGINS` | *(none)* | Comma-separated extra origins allowed to open WebSockets (the page's own origin is always allowed). |
+
+#### Build arguments
+
+Passed to `docker build` with `--build-arg`; they are baked into the UI's
+feedback links.
+
+| Arg | Default | Purpose |
+|---|---|---|
+| `APP_VERSION` | `dev` | Version shown in feedback reports. Deploy with `--build-arg APP_VERSION=$(git rev-parse --short HEAD)`. |
+| `ISSUES_URL` | this repo's issues (`https://github.com/HendersonT/quick-vote/issues`) | Where feedback links point. Self-hosters can point it at their own repo's issues URL. |
 
 ### Abuse limits
 

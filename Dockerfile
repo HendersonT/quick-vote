@@ -6,6 +6,11 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
+# Stamped into the UI for feedback links; deploys pass the commit hash.
+ARG APP_VERSION=dev
+# Where feedback links point; empty means the upstream repo.
+ARG ISSUES_URL=
+ENV VITE_APP_VERSION=$APP_VERSION VITE_ISSUES_URL=$ISSUES_URL
 RUN npm run build
 
 # --- Stage 2: build the static Go binary ------------------------------------
