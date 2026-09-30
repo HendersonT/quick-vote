@@ -28,7 +28,9 @@ titles.
   - `what` textarea (required): What happened?
   - `steps` textarea: Steps to reproduce
   - `expected` textarea: What did you expect?
-  - `screen` dropdown: Home, Suggesting, Voting, Results, Results page, Other
+  - `screen` input, with a hint listing Home, Suggesting, Voting, Results,
+    Results page, Other (an input, not a dropdown: GitHub only prefills text
+    fields from the URL)
   - `version` input: App version
   - `browser` input: Browser / device
 - `.github/ISSUE_TEMPLATE/feature_request.yml` — name "Feature suggestion",
@@ -51,7 +53,8 @@ export function issueUrl(kind: FeedbackKind, ctx: { screen: Screen; version: str
   `https://github.com/HendersonT/quick-vote/issues`. Result:
   `<base>/new?template=bug_report.yml&screen=<Label>&version=<v>&browser=<ua>`
   (feature: `template=feature_request.yml&version=<v>`), values
-  `URLSearchParams`-encoded. `screen` values are the dropdown labels exactly.
+  `URLSearchParams`-encoded. `screen` values are the labels listed in the
+  form's hint.
 - The function takes no URL, slug, state, or names — the vote code cannot
   reach it by construction. `userAgent` is truncated to 200 characters.
 - Version: `import.meta.env.VITE_APP_VERSION`, default `"dev"`.
@@ -84,8 +87,8 @@ export function issueUrl(kind: FeedbackKind, ctx: { screen: Screen; version: str
   param, correctly encoded (spaces, `&`, `#` in UA/version); feature URL uses
   the feature template and omits screen/browser; `VITE_ISSUES_URL` override is
   honored (test via an injectable base parameter or `vi.stubEnv`); UA
-  truncation; screen labels match the dropdown options in `bug_report.yml`
-  (test reads the YAML text and checks each label is present).
+  truncation; the prefilled ids are text inputs in `bug_report.yml` and the
+  screen hint lists every label (test reads the YAML text).
 - Footer render test (react-dom/server static render): both hrefs present
   with `target=_blank` and `rel` containing `noreferrer`; rendering the Room
   footer for a room path never includes the slug in any href.

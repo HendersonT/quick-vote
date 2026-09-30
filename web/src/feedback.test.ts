@@ -1,9 +1,14 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { issueUrl, SCREEN_LABELS, UPSTREAM_ISSUES_URL, type FeedbackContext } from "./feedback";
 
 const ctx: FeedbackContext = { screen: "voting", version: "abc1234", userAgent: "Mozilla/5.0 Firefox/131.0" };
 const params = (u: string) => new URL(u).searchParams;
+
+// Hermetic: a VITE_ISSUES_URL exported in the shell (e.g. by a self-hoster)
+// must not change what these tests expect.
+beforeEach(() => vi.stubEnv("VITE_ISSUES_URL", ""));
+afterEach(() => vi.unstubAllEnvs());
 
 describe("issueUrl", () => {
   it("prefills the bug form with safe context", () => {
@@ -31,6 +36,12 @@ describe("issueUrl", () => {
     expect(p.getAll("template")).toEqual(["bug_report.yml"]);
   });
 
+  it("encodes hostile version strings", () => {
+    const version = "v1 &x=#y";
+    expect(params(issueUrl("bug", { ...ctx, version })).get("version")).toBe(version);
+    expect(params(issueUrl("feature", { ...ctx, version })).get("version")).toBe(version);
+  });
+
   it("truncates very long user-agents to 200 characters", () => {
     const p = params(issueUrl("bug", { ...ctx, userAgent: "a".repeat(500) }));
     expect(p.get("browser")).toHaveLength(200);
@@ -47,11 +58,21 @@ describe("issueUrl", () => {
   });
 });
 
-describe("screen labels match the bug form dropdown", () => {
-  it("every label is an option in bug_report.yml", () => {
-    const yml = readFileSync(new URL("../../.github/ISSUE_TEMPLATE/bug_report.yml", import.meta.url), "utf8");
+describe("bug form prefill fields", () => {
+  const yml = readFileSync(new URL("../../.github/ISSUE_TEMPLATE/bug_report.yml", import.meta.url), "utf8");
+
+  // GitHub only prefills text fields from the URL (not dropdowns), so every
+  // prefilled id must be an input or textarea in the form.
+  it("screen, version and browser are text inputs", () => {
+    for (const id of ["screen", "version", "browser"]) {
+      expect(yml).toMatch(new RegExp(`- type: input\\n    id: ${id}\\n`));
+    }
+  });
+
+  it("the screen field's hint lists every label the app sends", () => {
+    const screenField = yml.slice(yml.indexOf("id: screen"), yml.indexOf("id: version"));
     for (const label of Object.values(SCREEN_LABELS)) {
-      expect(yml).toContain(`- ${label}\n`);
+      expect(screenField).toContain(label);
     }
   });
 });

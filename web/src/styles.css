@@ -1354,6 +1354,9 @@ button:disabled {
 }
 
 .feedback-footer a {
+  /* Comfortable tap target on phones without changing the text size. */
+  display: inline-block;
+  padding-block: var(--space-2);
   color: inherit;
   text-decoration: underline;
   text-underline-offset: 2px;

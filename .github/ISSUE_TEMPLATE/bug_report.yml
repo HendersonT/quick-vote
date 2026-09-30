@@ -22,17 +22,11 @@ body:
     id: expected
     attributes:
       label: What did you expect?
-  - type: dropdown
+  - type: input
     id: screen
     attributes:
       label: Screen
-      options:
-        - Home
-        - Suggesting
-        - Voting
-        - Results
-        - Results page
-        - Other
+      description: "Where it happened: Home, Suggesting, Voting, Results, Results page, or Other."
   - type: input
     id: version
     attributes:

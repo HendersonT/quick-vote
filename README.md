@@ -251,7 +251,10 @@ feedback links.
 | Arg | Default | Purpose |
 |---|---|---|
 | `APP_VERSION` | `dev` | Version shown in feedback reports. Deploy with `--build-arg APP_VERSION=$(git rev-parse --short HEAD)`. |
-| `ISSUES_URL` | this repo's issues (`https://github.com/HendersonT/quick-vote/issues`) | Where feedback links point. Self-hosters can point it at their own repo's issues URL. |
+| `ISSUES_URL` | this repo's issues (`https://github.com/HendersonT/quick-vote/issues`) | Where feedback links point. Self-hosters can point it at their own repo's issues URL; copy this repo's `.github/ISSUE_TEMPLATE` forms there so the prefill lands in the right fields. |
+
+Outside Docker, set the same values as `VITE_APP_VERSION` and `VITE_ISSUES_URL`
+in the environment of `npm run build`.
 
 ### Abuse limits
 

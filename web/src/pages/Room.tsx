@@ -28,7 +28,7 @@ import { connectRoom } from "../ws";
 interface RoomProps {
   slug: string;
   /** Reports the current screen (the phase once joined, else "other") for the feedback footer. */
-  onScreen?: (screen: Screen) => void;
+  onScreen?: (slug: string, screen: Screen) => void;
 }
 
 // One-time notice carried across the next-vote navigation ("Moved to the
@@ -98,8 +98,8 @@ export default function Room({ slug, onScreen }: RoomProps) {
   // phase never carries across votes.
   const phase = state && session ? state.phase : null;
   useEffect(() => {
-    onScreen?.(phase ?? "other");
-  }, [onScreen, phase]);
+    onScreen?.(slug, phase ?? "other");
+  }, [onScreen, slug, phase]);
 
   // Guards against re-recording history on every WS broadcast — only the
   // first snapshot after (re)joining this room needs to bump it (F6).
